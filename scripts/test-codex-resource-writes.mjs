@@ -28,7 +28,49 @@ try{
     });
   }
   check('Skill toggle rejects malformed TOML instead of appending another configuration block',()=>{const invalid=baseline+'secret = "unterminated-secret';write(config,invalid);const result=api.toggleCodexAsset('skill:fixture',false);assert.equal(result.ok,false);assert.equal(read(config),invalid);assert.ok(!result.message.includes('unterminated-secret'));});
-  check('Skill toggle preserves quoted enabled keys by refusing an unsafe duplicate assignment',()=>{const text=baseline+'\n[[skills.config]]\npath = '+JSON.stringify(path.join(home,'skills','fixture','SKILL.md'))+'\n"enabled" = true\n';write(config,text);const result=api.toggleCodexAsset('skill:fixture',false);assert.equal(result.ok,false);assert.equal(read(config),text);});
+  check('MCP inventory uses direct server keys and only changes the selected boolean',()=>{
+    const text=[
+      '\uFEFFnote = """', '[mcp_servers.phantom]', 'enabled = false', '"""',
+      '["mcp_servers"."company.tools"] # selected', 'command = "demo"', '"enabled"   = false  # preserve spacing',
+      '[mcp_servers."company.tools".env]', 'COLOR = "green"', '[mcp_servers.other]', 'command = "other"',
+    ].join('\r\n');
+    write(config,text);
+    const servers=api.listCodexAssets().filter(asset=>asset.kind==='mcp');
+    assert.deepEqual(servers.map(asset=>asset.id),['mcp:company.tools','mcp:other']);
+    assert.equal(servers[0].enabled,false);assert.equal(servers[0].mutable,true);
+    const result=api.toggleCodexAsset('mcp:company.tools',true);assert.equal(result.ok,true,result.message);
+    assert.equal(read(config),text.replace('false  # preserve','true  # preserve'));
+    assert.equal(api.listCodexAssets().find(asset=>asset.id==='mcp:company.tools').enabled,true);
+  });
+  check('Skill toggle preserves multiline content, quoted keys, comments, CRLF and unrelated array entries',()=>{
+    const file=path.join(home,'skills','fixture','SKILL.md'),text=[
+      '\uFEFFexample = """','[[skills.config]]','enabled = false','"""',
+      '[["skills"."config"]] # selected', "'path' = "+JSON.stringify(file), "'enabled' = false   # keep",
+      '[[skills.config]] # unrelated', 'path = "other/SKILL.md"', 'enabled = false', '',
+    ].join('\r\n');
+    write(config,text);
+    assert.equal(api.listCodexAssets().find(asset=>asset.id==='skill:fixture').enabled,false);
+    const result=api.toggleCodexAsset('skill:fixture',true);assert.equal(result.ok,true,result.message);
+    assert.equal(read(config),text.replace('false   # keep','true   # keep'));
+    assert.equal(api.listCodexAssets().find(asset=>asset.id==='skill:fixture').enabled,true);
+  });
+  check('Inline TOML resource settings are listed with their actual state and are read-only',()=>{
+    const file=path.join(home,'skills','fixture','SKILL.md'),text='mcp_servers = { local = { enabled = false } }\nskills.config = [{ path = '+JSON.stringify(file)+', enabled = false }]\n';
+    write(config,text);
+    const assets=api.listCodexAssets();
+    for(const id of ['mcp:local','skill:fixture']){
+      const asset=assets.find(entry=>entry.id===id);assert.equal(asset.enabled,false);assert.equal(asset.mutable,false);
+      assert.equal(api.toggleCodexAsset(id,true).ok,false);assert.equal(read(config),text);
+    }
+  });
+  check('Missing flags are added once to the correct explicit table, including a header at EOF',()=>{
+    const file=path.join(home,'skills','fixture','SKILL.md'),text='[[skills.config]]\r\npath = '+JSON.stringify(file)+'\r\n[mcp_servers.demo]';
+    write(config,text);
+    let result=api.toggleCodexAsset('skill:fixture',false);assert.equal(result.ok,true,result.message);
+    const skillText=text.replace('[[skills.config]]\r\n','[[skills.config]]\r\nenabled = false\r\n');assert.equal(read(config),skillText);
+    result=api.toggleCodexAsset('mcp:demo',false);assert.equal(result.ok,true,result.message);
+    assert.equal(read(config),skillText+'\r\nenabled = false');
+  });
   check('Config and prompt mutators refuse oversized existing files',()=>{for(const file of [config,prompt]){write(file,'');fs.truncateSync(file,4*1024*1024+1);}assert.equal(api.writeCodexFlag('model_context_window','1000').ok,false);assert.equal(api.toggleCodexAsset('skill:fixture',false).ok,false);assert.equal(api.writeAgentsMd('small replacement').ok,false);assert.equal(fs.statSync(config).size,4*1024*1024+1);assert.equal(fs.statSync(prompt).size,4*1024*1024+1);});
   check('Successful prompt and flag writes expose recoverable original files in their manifests',()=>{write(config,baseline);write(prompt,'original instructions');assert.equal(api.writeCodexFlag('model_context_window','32000').ok,true);const saved=api.writeAgentsMd('new instructions');assert.equal(saved.ok,true);const manifest=JSON.parse(read(saved.backup));assert.equal(read(manifest.files[0].backup),'original instructions');assert.ok(read(config).includes('fixture-secret-keep'));assert.ok(read(config).includes('model_context_window = 32000'));});
   check('Context and its 90 percent compact threshold replace together once with one recoverable original',()=>{

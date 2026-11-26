@@ -82,6 +82,7 @@ export interface Settings {
   requestTimeoutMs: number;
   usageRetentionDays: number;
   lanShare: boolean;
+  keepAwakeWhileSharing: boolean;
   gatewayToken: string;
   webdavUrl: string;
   webdavUser: string;

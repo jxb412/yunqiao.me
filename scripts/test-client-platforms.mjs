@@ -51,6 +51,8 @@ try {
     assert(api.cliCandidates('gemini', ctx).includes('D:\\Tools\\gemini.cmd'));
     const candidates = api.desktopCandidates(['Claude'], ctx);
     assert(candidates.includes('E:\\Local\\Programs\\Claude\\Claude.exe'));
+    assert(candidates.includes('E:\\Local\\AnthropicClaude\\claude.exe'));
+    assert(!api.desktopCandidates(['CodeBuddy'], ctx).includes('E:\\Local\\AnthropicClaude\\claude.exe'));
     assert(candidates.includes('E:\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Claude.lnk'));
     assert(!api.cliCandidates('gemini', { ...ctx, platform: 'darwin', home: '/Users/fixture', isolated: true, environment: { Path: '/mixed-case' } }).includes('/mixed-case/gemini'));
   });
@@ -103,9 +105,9 @@ try {
     }
     assert.equal(api.getAdapter('codex-cli').detect().command, executable);
   });
-  check(`native ${process.platform} CodeBuddy-only installation is detected`, () => {
-    const candidate = process.platform === 'darwin' ? path.join(scratch, 'Applications', 'CodeBuddy.app')
-      : process.platform === 'win32' ? path.join(scratch, 'AppData', 'Local', 'Programs', 'CodeBuddy', 'CodeBuddy.exe') : path.join(scratch, '.local', 'bin', 'codebuddy');
+  for (const name of process.platform === 'win32' ? ['CodeBuddy CN', 'CodeBuddy'] : ['CodeBuddy']) check(`native ${process.platform} ${name} installation is detected`, () => {
+    const candidate = process.platform === 'darwin' ? path.join(scratch, 'Applications', name + '.app')
+      : process.platform === 'win32' ? path.join(scratch, 'AppData', 'Local', 'Programs', name, name + '.exe') : path.join(scratch, '.local', 'bin', name.toLowerCase());
     if (process.platform === 'darwin') fs.mkdirSync(candidate, { recursive: true }); else write(candidate);
     assert.equal(api.getAdapter('workbuddy').detect().command, candidate);
   });

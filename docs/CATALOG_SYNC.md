@@ -15,10 +15,10 @@ GET /api/v1/admin/groups/{id}/model-allowlist-candidates
 
 ## 每日任务
 
-先由管理员手动同步一次，确认接口可用和候选符合站点实际情况。然后为 PHP 网站用户配置 cron，例如网站 PHP 用户为 `www` 时使用该用户的 crontab：
+先由管理员手动同步一次，确认接口可用和候选符合站点实际情况。然后在 PHP 网站用户的 crontab 中设置 `AURORA_WEB_ROOT`，值为该部署的网站绝对路径，并添加定时任务。
 
 ```cron
-17 4 * * * /www/server/php/82/bin/php /www/wwwroot/ai.haowucm.cn/catalog_sync.php >> /www/aurora-data/catalog-sync.log 2>&1
+17 4 * * * /www/server/php/82/bin/php "${AURORA_WEB_ROOT:?}/catalog_sync.php" >> /www/aurora-data/catalog-sync.log 2>&1
 ```
 
 默认 PHP CLI 可能是 7.4，必须使用网站对应的 PHP 8.1+ 路径。任务成功只输出同步数量/时间，不输出密钥。内部 `catalog-sync.lock` 防止任务重叠，Web 管理员写入与 CLI 合并共用 `catalog-write.lock`，网络读取期间不占用目录写锁。

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, dialog, ipcMain, powerSaveBlocker, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -15,6 +15,7 @@ import { GatewayServer, resetGateway } from '../core/gateway/server.js';
 import { runAction, type ActionDeps } from '../core/actions.js';
 import type { UsageRecord } from '../core/store/types.js';
 import { onDetectionUpdated } from '../core/agents/detectionAsync.js';
+import { createGatewayPowerPolicy } from './gatewayPower.js';
 
 const DEV = process.env.AURORA_DEV === '1' && !app.isPackaged;
 const UI_URL = process.env.AURORA_UI_URL || 'http://localhost:5199';
@@ -25,6 +26,7 @@ let store: AuroraStore = getStore();
 let gatewayError = '';
 let quitting = false;
 let gatewayChange: Promise<void> | null = null;
+const updateGatewayPower = createGatewayPowerPolicy(powerSaveBlocker);
 let clientScanTimer: ReturnType<typeof setInterval> | undefined;
 let stopDetectionUpdates: (() => void) | undefined;
 let stopMemberSessionMaintenance: (() => void) | undefined;
@@ -62,7 +64,10 @@ async function ensureGateway(): Promise<void> {
         return result === null ? { error: '此操作需要在桌面端完成' } : result;
       },
       onRequest: record => { recent.unshift(record); if (recent.length > 500) recent.pop(); if (win && !win.isDestroyed()) win.webContents.send('aurora:usage', record); },
-      onStatus: state => { if (win && !win.isDestroyed()) win.webContents.send('aurora:gateway', state); },
+      onStatus: state => {
+        updateGatewayPower(store.getSettings(), quitting ? undefined : state);
+        if (win && !win.isDestroyed()) win.webContents.send('aurora:gateway', state);
+      },
     });
     try { await gateway.start(settings.gatewayHost, settings.gatewayPort); }
     catch (e: any) { gatewayError = e.code === 'EADDRINUSE' ? `端口 ${settings.gatewayPort} 已被占用，请在系统设置中更换端口。` : String(e.message || e); throw new Error(gatewayError); }
@@ -146,7 +151,10 @@ async function handleAction(action: string, payload: any) {
   if (action.startsWith('member.')) return memberAction(store, action, payload);
   const shared = await runAction(deps(), action, payload);
   if (shared !== null) {
-    if (action === 'settings.save') applyLoginItem(store.getSettings().launchAtLogin);
+    if (action === 'settings.save') {
+      applyLoginItem(store.getSettings().launchAtLogin);
+      updateGatewayPower(store.getSettings(), quitting ? undefined : gateway?.getStatus());
+    }
     if (['settings.save', 'provider.save', 'provider.delete', 'agent.connect', 'agent.disconnect'].includes(action)) refreshTray();
     if (['localClients.scan', 'localClients.restore'].includes(action) && shared.ok) refreshLocalClients();
     return shared;
@@ -225,6 +233,6 @@ else {
     app.on('activate', showWindow);
   }).catch(e => { dialog.showErrorBox('云桥 AI 启动失败', e.message); app.quit(); });
 }
-app.on('before-quit', () => { quitting = true; });
+app.on('before-quit', () => { quitting = true; updateGatewayPower(store.getSettings()); });
 app.on('window-all-closed', () => { if (!store.getSettings().closeToTray && process.platform !== 'darwin') app.quit(); });
 app.on('will-quit', () => { stopDetectionUpdates?.(); stopMemberSessionMaintenance?.(); if (clientScanTimer) clearInterval(clientScanTimer); void gateway?.stop(); tray?.destroy(); });

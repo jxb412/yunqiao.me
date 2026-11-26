@@ -1,5 +1,21 @@
 # 三个参考项目与真实用户需求调研
 
+## 2026-11-26 更新
+
+本轮对照 11 月 15 日的调研和云桥 0.6.12 工作树，核对了三个项目的 Releases、提交、Issues 与可访问的社区讨论。日期按北京时间。cc-switch 开启了 GitHub Discussions，CodexPlusPlus 和 magpie 在核对时均未开启，该两项的用户反馈取自 Issues。
+
+| 项目 | 上游变化与社区反馈 | 本次云桥改动 |
+| --- | --- | --- |
+| cc-switch | v4.0.41 加入 CodeBuddy 支持；v4.0.42 增加 GitHub Copilot Auto，并修正 Antigravity 标签串到其他客户端的问题。Discussion #9813 中有用户反馈，新版 Codex Desktop 的新会话只显示官方模型，旧会话仍可显示原模型。该讨论尚不足以证明云桥存在同一故障。[CodeBuddy PR](https://github.com/farion1231/cc-switch/pull/8758) · [v4.0.42](https://github.com/farion1231/cc-switch/releases/tag/v4.0.42) · [Discussion #9813](https://github.com/farion1231/cc-switch/discussions/9813) | 支持读取 CodeBuddy CLI 的项目会话目录，保留旧目录，通过现有历史页查看和导出消息。续聊需核对会话标识与原项目路径。 |
+| CodexPlusPlus | v2.8.0 增加独立压缩模型、图像输入模型、微信会话管理，并修复空闲后 WebSocket 续接失败。多账号和多 Key 的进一步改动已进主分支。#3115 报告的技能开关丢失已关闭，#2983 的跨客户端 MCP 与 Skills 管理需求仍开放。[v2.8.0](https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v2.8.0) · [多 Key 提交](https://github.com/BigPizzaV3/CodexPlusPlus/commit/492e869e520ef27ea19cd85681a7d1f3486ecdae) · [#3115](https://github.com/BigPizzaV3/CodexPlusPlus/issues/3115) · [#2983](https://github.com/BigPizzaV3/CodexPlusPlus/issues/2983) | 修复可复现的 Codex 资源列表和切换问题：识别带点号或引号的 MCP 名称，忽略多行文本中的伪表头，将嵌套配置归属于原服务器。可精确写入的开关保留注释、换行及无关字段。 |
+| magpie | v0.1.4799 修复部分 Responses 文本缺少引用数组导致的 SDK 兼容问题；v0.1.4804 修复链接里的隐私占位符还原；v0.1.4809 让共享中的网关保持主机唤醒。#7723 另报告了流式遮蔽文本还原异常，#7748 请求按实际账户的可用模型路由。[v0.1.4799](https://github.com/yetone/magpie/releases/tag/v0.1.4799) · [v0.1.4804](https://github.com/yetone/magpie/releases/tag/v0.1.4804) · [v0.1.4809](https://github.com/yetone/magpie/releases/tag/v0.1.4809) · [#7723](https://github.com/yetone/magpie/issues/7723) · [#7748](https://github.com/yetone/magpie/issues/7748) | 修复云桥非流式原生 Responses 文本缺少 `annotations` 的情况；按请求还原 URL 中被编码的遮蔽占位符，覆盖跨流式分片；增加桌面端局域网共享防休眠开关，默认关闭。 |
+
+仍值得单独验证的需求包括 OpenCode 2.4 历史格式、Windows 与 WSL 分开的资源和配置目录、路由组中每个账号实际可用的模型。本轮没有这些场景的原生兼容性结论。云桥原有的多 Key、路由策略和备份能力没有重复移植，内置 CodexPlusPlus 扩展仍使用原固定版本。[OpenCode 反馈](https://github.com/farion1231/cc-switch/issues/9982) · [WSL 反馈](https://github.com/BigPizzaV3/CodexPlusPlus/issues/3235) · [账户模型反馈](https://github.com/yetone/magpie/issues/7748)
+
+另有两条 cc-switch 讨论与云桥的旧会话直接相关。#9692 描述了 Claude Desktop 更换供应商后，旧消息里的 MCP 内容被新上游拒绝；#9560 希望额度不足时自动换源并保留会话。后续验收应分别检查本地消息仍可阅读，以及目标供应商能否实际接受同一段工具调用历史。[跨供应商会话讨论](https://github.com/farion1231/cc-switch/discussions/9692) · [额度切换需求](https://github.com/farion1231/cc-switch/discussions/9560)
+
+## 2026-11-15 调研记录
+
 调研日期：2026-11-15（Asia/Shanghai）。通过 GitHub 公开 API 阅读三个项目当前 README、按评论数排序的 Issues 样本、重点 issue 正文和部分评论，以及 cc-switch Discussions 前 50 条公开主题。该样本适合发现需求，不是全站统计，不能推导「某类问题占一半」之类比例。已关闭的 issue 说明历史需求，不能据此断言当前版本仍有同样缺陷。
 
 CodexPlusPlus 的仓库元数据 `has_discussions=false`；其 Discussions API 返回 410。magpie 的 Discussions API 也返回 410。因此这两者以 Issues 和 issue 评论作为用户讨论来源，没有虚构独立讨论区内容。

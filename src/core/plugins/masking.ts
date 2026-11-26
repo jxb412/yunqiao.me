@@ -5,8 +5,7 @@ import { stableHash } from '../util.js';
  * 隐私遮蔽（借鉴 magpie）：把密钥、令牌、邮箱、手机号在离开本机前替换成占位符，
  * 回程再换回来。占位符稳定（同一值每次都一样），不破坏 prompt cache。
  *
- * 约束：流式时占位符可能被切成两半，这里用「尾部回退」策略，
- * 遇到没闭合的 `{{` 就先扣住不发。
+ * 流式输出可以在花括号或其 URL 百分号编码的任意位置断开。
  */
 const RULES: Array<{ kind: string; re: RegExp }> = [
   { kind: 'API_KEY', re: /\b(sk-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xoxb-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g },
@@ -73,12 +72,18 @@ export class Masker {
     };
   }
 
+  private restore(text: string, json: boolean): string {
+    return text.replace(/\{\{([A-Za-z0-9_]+)\}\}|%7[Bb]%7[Bb]([A-Za-z0-9_]+)%7[Dd]%7[Dd]/g, (match, literal, encoded) => {
+      const value = this.dict.get(`{{${literal ?? encoded}}}`);
+      if (value === undefined) return match;
+      if (encoded) return encodeURIComponent(value);
+      return json ? JSON.stringify(value).slice(1, -1) : value;
+    });
+  }
+
   unmaskText(text: string): string {
     if (!this.enabled || !this.dict.size || !text) return text;
-    for (const [ph, val] of this.dict) {
-      if (text.includes(ph)) text = text.split(ph).join(val);
-    }
-    return text;
+    return this.restore(text, false);
   }
 
   unmaskValue(value: any): any {
@@ -93,13 +98,14 @@ export class Masker {
   unmaskDelta(text: string, channel: string, json = false): string {
     if (!this.enabled || !this.dict.size) return text;
     let buf = (this.pending.get(channel) ?? '') + text;
-    const tail = /\{\{[A-Za-z0-9_]*\}?$|\{$/.exec(buf);
+    const literalTail = /\{\{[A-Za-z0-9_]*\}?$|\{$/.exec(buf);
+    // The encoded token may end mid-triplet, including between the two opening or closing braces.
+    const tail = literalTail ?? /(?:%7[Bb](?:%7[Bb][A-Za-z0-9_]*(?:%7[Dd])?)?(?:%7?)?|%7?)$/.exec(buf);
     if (tail && tail[0].length < 100) {
       this.pending.set(channel, buf.slice(tail.index));
       buf = buf.slice(0, tail.index);
     } else this.pending.delete(channel);
-    for (const [ph, val] of this.dict) buf = buf.split(ph).join(json ? JSON.stringify(val).slice(1, -1) : val);
-    return buf;
+    return this.restore(buf, json);
   }
 
   flush(channel: string): string {

@@ -17,6 +17,7 @@ import { GITHUB_RELEASE_API } from '../releaseSources.js';
 import { newId, nowIso, dayKey } from '../util.js';
 import { validatePluginConfiguration, clearMiddlewareStatus, clearAllMiddlewareStatus } from '../plugins/middleware.js';
 import { validateBalanceQuery } from '../providerBalanceValidation.js';
+import { isolateProviderCredentials } from '../providerCredentials.js';
 import { applyContextDefaults, isValidContextWindow } from '../modelContext.js';
 
 export * from './types.js';
@@ -115,6 +116,7 @@ export const DEFAULT_SETTINGS = (): Settings => ({
   requestTimeoutMs: 600000,
   usageRetentionDays: 90,
   lanShare: false,
+  keepAwakeWhileSharing: false,
   gatewayToken: randomBytes(24).toString('hex'),
   webdavUrl: '',
   webdavUser: '',
@@ -195,7 +197,9 @@ export class AuroraStore {
     if (input.id) {
       const idx = list.findIndex((p) => p.id === input.id);
       if (idx >= 0) {
-        list[idx] = validateProvider({ ...list[idx], ...input, updatedAt: nowIso() } as Provider);
+        const previous = list[idx];
+        const next = { ...previous, ...input, updatedAt: nowIso() };
+        list[idx] = validateProvider(isolateProviderCredentials(previous, next));
         this.providers.write([...list]);
         return list[idx];
       }
@@ -324,7 +328,7 @@ export class AuroraStore {
     if (!Number.isInteger(next.gatewayPort) || next.gatewayPort < 1024 || next.gatewayPort > 65535) throw new Error('网关端口必须在 1024–65535 之间');
     if (!isIP(next.gatewayHost) && next.gatewayHost !== 'localhost') throw new Error('网关监听地址必须是有效 IP 或 localhost');
     if (typeof next.gatewayToken !== 'string' || next.gatewayToken.length < 16 || /[\r\n]/.test(next.gatewayToken)) throw new Error('网关访问令牌至少 16 个字符，不能留空');
-    for (const key of ['autoStartGateway', 'launchAtLogin', 'closeToTray', 'maskSecrets', 'autoTrimContext', 'lanShare', 'logRequests', 'autoCheckUpdate', 'autoSyncModels'] as const) {
+    for (const key of ['autoStartGateway', 'launchAtLogin', 'closeToTray', 'maskSecrets', 'autoTrimContext', 'lanShare', 'keepAwakeWhileSharing', 'logRequests', 'autoCheckUpdate', 'autoSyncModels'] as const) {
       if (typeof next[key] !== 'boolean') throw new Error(`${key} 必须为开关值`);
     }
     for (const [key, min, max] of [['maxRetries', 0, 10], ['requestTimeoutMs', 1000, 1800000], ['firstByteTimeoutMs', 1000, 600000], ['usageRetentionDays', 1, 3650]] as const) {

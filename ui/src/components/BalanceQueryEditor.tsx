@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { BalanceAdapter, ProviderBalanceQuery } from '../lib/api';
-import { validateBalanceQuery } from '../../../src/core/providerBalanceValidation';
+import { providerOrigin, validateBalanceQuery } from '../../../src/core/providerBalanceValidation';
 import { Field } from './ui';
 
 const ADAPTERS: Array<[BalanceAdapter, string]> = [
@@ -49,7 +49,12 @@ export default function BalanceQueryEditor({ value, baseUrl, onChange, onValidit
     {query.adapter !== 'custom' && <p className="hint">{query.adapter === 'disabled' ? '不自动查询，也不发送手动刷新请求。' : '按服务商支持的接口读取余额或额度；未开放查询接口时会明确提示。'}</p>}
     {query.adapter === 'custom' && <>
       <div className="grid cols-2">
-        <Field label="查询地址" hint="填写实际查询接口的完整地址。"><input className="input mono" aria-label="余额查询地址" value={query.url || ''} onChange={event => set({ url: event.target.value })} /></Field>
+        <Field label="查询地址" hint="填写实际查询接口的完整地址。更换站点后请重新填写查询凭据。"><input className="input mono" aria-label="余额查询地址" value={query.url || ''} onChange={event => {
+          const url = event.target.value;
+          const changed = !!query.url && providerOrigin(query.url) !== providerOrigin(url);
+          if (changed) setHeaders('');
+          set({ url, ...(changed ? { token: undefined, headers: undefined, body: undefined } : {}) });
+        }} /></Field>
         <Field label="请求方式"><select className="select" aria-label="余额请求方式" value={query.method || 'GET'} onChange={event => set({ method: event.target.value as 'GET' | 'POST', ...(event.target.value === 'GET' ? { body: undefined } : {}) })}><option value="GET">GET</option><option value="POST">POST</option></select></Field>
       </div>
       <Field label="查询认证" hint="复用 API Key 仅限与 Base URL 同源；跨站查询请使用独立凭据。"><select className="select" aria-label="余额查询认证" value={query.auth || 'api-key'} onChange={event => set({ auth: event.target.value as ProviderBalanceQuery['auth'], ...(event.target.value !== 'token' ? { token: undefined } : {}) })}><option value="api-key">复用每个 API Key（同源）</option><option value="token">独立查询 Token</option><option value="none">无需认证</option></select></Field>

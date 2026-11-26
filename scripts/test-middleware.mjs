@@ -12,12 +12,35 @@ let count = 0;
 const check = (name, fn) => { fn(); count++; console.log(`PASS ${name}`); };
 try {
   const bundle = path.join(root, 'api.cjs');
-  await build({ stdin: { contents: "export * from './src/core/plugins/middleware.ts'; export * from './src/core/store/index.ts';", resolveDir: workspace }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
-  const { applyMiddleware, getMiddlewareStatus, AuroraStore } = createRequire(import.meta.url)(bundle);
+  await build({ stdin: { contents: "export * from './src/core/plugins/middleware.ts'; export * from './src/core/plugins/masking.ts'; export * from './src/core/store/index.ts';", resolveDir: workspace }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
+  const { applyMiddleware, getMiddlewareStatus, AuroraStore, Masker } = createRequire(import.meta.url)(bundle);
   const request = () => ({ model: 'fixture-model', system: '', messages: [{ role: 'user', blocks: [{ type: 'text', text: 'original' }] }], tools: [], toolChoice: { type: 'auto' }, stream: false });
   const custom = (code, options = {}) => ({ id: 'same-id', name: 'Fixture', enabled: true, updatedAt: 'same-time', code, options });
   const run = (plugins, ir = request()) => applyMiddleware({ listPlugins: () => plugins }, ir, { agent: 'fixture', protocol: 'openai-chat', requestId: 'fixture' });
   const store = new AuroraStore(path.join(root, 'store'));
+
+  check('privacy masking restores only known placeholders in encoded URL components, across stream boundaries', () => {
+    const masker = new Masker(true), email = 'reader+qa@example.test';
+    const token = masker.maskText(email), encoded = encodeURIComponent(token);
+    assert.equal(encoded.startsWith('%7B%7BEMAIL_'), true);
+    const unknown = encodeURIComponent(new Masker(true).maskText('another@example.test'));
+    const url = value => 'https://example.test/' + value + '?keep=%2F%26&unknown=' + unknown;
+    const expected = url(encodeURIComponent(email));
+    for (const spelling of [encoded, encoded.replace(/%7[BD]/g, escape => escape.toLowerCase())]) {
+      const received = url(spelling);
+      assert.deepEqual(masker.unmaskValue({ link: received, label: token }), { link: expected, label: email });
+      for (let split = 0; split <= received.length; split++) {
+        const first = masker.unmaskDelta(received.slice(0, split), 'text');
+        assert.equal(first + masker.unmaskDelta(received.slice(split), 'text') + masker.flush('text'), expected);
+      }
+      const fragments = [...received].map(char => masker.unmaskDelta(char, 'tool', true));
+      assert.equal(fragments.join('') + masker.flush('tool'), expected);
+    }
+    assert.equal(masker.unmaskText(encodeURIComponent(encoded)), encodeURIComponent(encoded));
+    assert.equal(masker.unmaskDelta('%7B%7', 'left'), '');
+    assert.equal(masker.unmaskDelta('other channel', 'right'), 'other channel');
+    assert.equal(masker.flush('left'), '%7B%7');
+  });
 
   check('invalid script syntax is rejected before modifying persistent plugin state', () => {
     const before = JSON.stringify(store.listPlugins());

@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
+import { CLAUDE_DESKTOP_PROFILE } from '../claudeDesktopPaths.js';
 
 type OwnedJson = 'claude-onboarding-v1';
 export interface PermissionScope { kind: 'codex-execution-v1' | 'claude-execution-v1'; profile?: string }
 export interface PlannedFile { path: string; before: string; after: string; existed: boolean; ownedJson?: OwnedJson; permissionScope?: PermissionScope | null }
-interface BackupEntry { path: string; backup: string | null; installedHash: string; codexRuntimeHash?: string; originalHash?: string; originalAbsent?: true; ownedJson?: OwnedJson; permissionScope?: PermissionScope }
+interface BackupEntry { path: string; backup: string | null; installedHash: string; codexRuntimeHash?: string; claudePreferencesHash?: string; originalHash?: string; originalAbsent?: true; ownedJson?: OwnedJson; permissionScope?: PermissionScope }
 interface BackupManifest { format: 'aurora-client-backup-v1'; agentId: string; files: BackupEntry[] }
 
 export const digest = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -105,13 +106,47 @@ export function codexRuntimeHash(file: string, text: string): string | undefined
     return digest(normalized);
   } catch { return undefined; }
 }
+const desktopPreferenceKeys = ['preferences', 'coworkUserFilesPath'] as const;
+function claudePreferencesHash(text: string): string | undefined {
+  try {
+    const value = JSON.parse(text);
+    if (!value || Array.isArray(value) || value.deploymentMode !== '3p') return undefined;
+    if (Object.hasOwn(value, 'preferences') && (!value.preferences || typeof value.preferences !== 'object' || Array.isArray(value.preferences))) return undefined;
+    if (Object.hasOwn(value, 'coworkUserFilesPath') && typeof value.coworkUserFilesPath !== 'string') return undefined;
+    for (const key of desktopPreferenceKeys) delete value[key];
+    return digest(JSON.stringify(value));
+  } catch { return undefined; }
+}
+function isClaudePreferencesFile(agentId: string, file: string, paths: string[]): boolean {
+  return agentId === 'claude-desktop' && path.basename(paths[0]) === 'claude_desktop_config.json'
+    && path.basename(path.dirname(paths[0])) === 'Claude'
+    && path.resolve(file) === path.resolve(path.dirname(paths[0]), '..', 'Claude-3p', 'claude_desktop_config.json');
+}
 function installedMatches(entry: BackupEntry, current: string): boolean {
   if (entry.ownedJson) return onboardingObject(current).hasCompletedOnboarding === true;
-  return digest(current) === entry.installedHash || !!entry.codexRuntimeHash && codexRuntimeHash(entry.path, current) === entry.codexRuntimeHash;
+  return digest(current) === entry.installedHash || !!entry.codexRuntimeHash && codexRuntimeHash(entry.path, current) === entry.codexRuntimeHash
+    || !!entry.claudePreferencesHash && claudePreferencesHash(current) === entry.claudePreferencesHash;
+}
+function desktopSealedConflict(agentId: string, file: string, current: string): string | undefined {
+  if (agentId !== 'claude-desktop' || path.basename(file) !== CLAUDE_DESKTOP_PROFILE + '.json') return;
+  try {
+    const key = JSON.parse(current).inferenceGatewayApiKey;
+    if (typeof key === 'string' && key.startsWith('__sealed__:v1:')) return 'Claude 桌面版的网关配置已变化，当前密钥由客户端加密保存。云桥无法核实它与接入时的密钥一致，已保留此配置。请在 Claude 桌面版的第三方配置中核对或切换网关，原始备份仍可供核对。';
+  } catch { /* Use the standard conflict message for an unreadable profile. */ }
 }
 function restoredContent(entry: BackupEntry, current: string): string | null {
   const originalText = entry.backup ? readText(entry.backup) : null;
   if (entry.originalHash && digest(originalText!) !== entry.originalHash) throw new Error('原始配置备份校验失败，已停止恢复');
+  if (entry.claudePreferencesHash) {
+    const original = originalText === null ? {} : JSON.parse(originalText.replace(/^\uFEFF/, ''));
+    const latest = JSON.parse(current);
+    if (desktopPreferenceKeys.some(key => JSON.stringify(latest[key]) !== JSON.stringify(original[key]))) {
+      for (const key of desktopPreferenceKeys) {
+        if (Object.hasOwn(latest, key)) original[key] = latest[key]; else delete original[key];
+      }
+      return JSON.stringify(original, null, 2) + '\n';
+    }
+  }
   if (!entry.ownedJson) return originalText;
   const value = onboardingObject(current), original = originalText === null ? {} : onboardingObject(originalText);
   if (value.hasCompletedOnboarding !== true) throw new Error('Claude 引导标记已被其他程序修改，已停止恢复');
@@ -133,8 +168,19 @@ function loadManifest(file: string, agentId: string, allowed: string[]): BackupM
     if (!e || typeof e.path !== 'string' || !/^[a-f0-9]{64}$/.test(e.installedHash) || (e.originalHash !== undefined && (e.backup === null || !/^[a-f0-9]{64}$/.test(e.originalHash))) || (e.backup !== null && typeof e.backup !== 'string') || !allowed.some(p => path.resolve(p) === path.resolve(e.path)) || (e.backup !== null && !isWithin(root, e.backup)))
       throw new Error('备份包含不属于此客户端的文件');
     if (e.codexRuntimeHash !== undefined && (agentId !== 'codex-cli' || path.basename(e.path) !== 'config.toml' || !/^[a-f0-9]{64}$/.test(e.codexRuntimeHash))) throw new Error('运行时配置校验记录无效');
+    if (e.claudePreferencesHash !== undefined && (!isClaudePreferencesFile(agentId, e.path, allowed) || !/^[a-f0-9]{64}$/.test(e.claudePreferencesHash))) throw new Error('Claude 桌面偏好校验记录无效');
     if (e.originalAbsent !== undefined && (e.originalAbsent !== true || e.backup !== null)) throw new Error('备份中的原始配置不存在记录无效');
     if (e.backup !== null) checkBackupFile(root, e.backup);
+    // Older manifests have only a byte hash. Reconstruct the original adapter
+    // write and grant preference merging only when that exact write is proven.
+    if (!e.claudePreferencesHash && isClaudePreferencesFile(agentId, e.path, allowed)) {
+      const original = e.backup === null ? null : readText(e.backup);
+      if (original === null ? e.originalAbsent === true : digest(original) === e.originalHash) {
+        const data = original === null ? {} : JSON.parse(original.replace(/^\uFEFF/, ''));
+        const installed = JSON.stringify({ ...data, deploymentMode: '3p' }, null, 2) + '\n';
+        if (digest(installed) === e.installedHash) e.claudePreferencesHash = claudePreferencesHash(installed);
+      }
+    }
     validateOwnership(agentId, e, allowed);
     validatePermissionScope(agentId, e, allowed);
   }
@@ -204,7 +250,7 @@ export function applyPlan(agentId: string, files: PlannedFile[], previousBackup?
   for (const f of files) {
     if (fs.existsSync(f.path) !== f.existed || readText(f.path) !== f.before) throw new Error('配置刚被其他程序修改，请重新预览');
     const old = previous?.files.find(e => e.path === f.path);
-    if (old && (!f.existed || !installedMatches(old, f.before))) throw new Error(`配置在上次接入后有外部修改，请先处理冲突：${f.path}`);
+    if (old && (!f.existed || !installedMatches(old, f.before))) throw new Error(desktopSealedConflict(agentId, f.path, f.before) ?? `配置在上次接入后有外部修改，请先处理冲突：${f.path}`);
     if (old?.ownedJson && f.ownedJson !== old.ownedJson) throw new Error('不能丢弃引导设置的受管字段备份');
     let backup = old?.backup;
     let originalHash = old?.originalHash;
@@ -223,7 +269,8 @@ export function applyPlan(agentId: string, files: PlannedFile[], previousBackup?
     }
     const permissionScope = f.permissionScope === undefined ? old?.permissionScope : f.permissionScope;
     const runtimeHash = agentId === 'codex-cli' ? codexRuntimeHash(f.path, f.after) : undefined;
-    manifest.files.push({ path: f.path, backup: backup ?? null, installedHash: digest(f.after), ...(runtimeHash ? { codexRuntimeHash: runtimeHash } : {}), ...(originalHash ? { originalHash } : {}), ...(originalAbsent ? { originalAbsent } : {}), ...(f.ownedJson ? { ownedJson: f.ownedJson } : {}), ...(permissionScope ? { permissionScope } : {}) });
+    const preferencesHash = isClaudePreferencesFile(agentId, f.path, allowed) ? claudePreferencesHash(f.after) : undefined;
+    manifest.files.push({ path: f.path, backup: backup ?? null, installedHash: digest(f.after), ...(runtimeHash ? { codexRuntimeHash: runtimeHash } : {}), ...(preferencesHash ? { claudePreferencesHash: preferencesHash } : {}), ...(originalHash ? { originalHash } : {}), ...(originalAbsent ? { originalAbsent } : {}), ...(f.ownedJson ? { ownedJson: f.ownedJson } : {}), ...(permissionScope ? { permissionScope } : {}) });
   }
   const manifestPath = path.join(root, `${agentId}-${stamp}.json`);
   atomicWrite(manifestPath, JSON.stringify(manifest, null, 2));
@@ -257,7 +304,7 @@ export function restorePlan(agentId: string, backup: string | undefined, allowed
   const manifest = loadManifest(backup, agentId, allowed);
   const before = manifest.files.map(e => {
     const current = readText(e.path);
-    if (!fs.existsSync(e.path) || !installedMatches(e, current)) throw new Error(`配置在接入后有修改，已停止恢复以保留你的改动：${e.path}`);
+    if (!fs.existsSync(e.path) || !installedMatches(e, current)) throw new Error(desktopSealedConflict(agentId, e.path, current) ?? `配置在接入后有修改，已停止恢复以保留你的改动：${e.path}`);
     if (e.backup && !fs.existsSync(e.backup)) throw new Error(`原始备份丢失：${e.backup}`);
     return { entry: e, current, restored: restoredContent(e, current) };
   });
@@ -330,17 +377,17 @@ function tableIdentity(section: string): string {
   }
   return JSON.stringify(parts);
 }
-/** Edits only the named table; unrelated tables and comments retain their original text. */
-export function patchToml(src: string, section: string, values: Record<string, TomlValue>): string {
-  try { parseToml(src.replace(/^\uFEFF/, '')); } catch { throw new Error('原配置不是有效的 TOML，已停止修改'); }
-  const lines = src.replace(/^\uFEFF/, '').split(/\r?\n/);
-  const out: string[] = [];
-  const target = tableIdentity(section);
-  let current = '';
-  let found = section === '';
-  const written = new Set<string>();
-  let multiline = '', depth = 0, skipping = false;
-  const scan = (line: string) => {
+/** Track TOML continuations so table-like text inside strings and arrays stays data. */
+export function tomlLineScanner() {
+  let multiline = '', depth = 0;
+  return (line: string) => {
+    const continuation = !!multiline || depth > 0;
+    const headerText = line.replace(/("(?:[^"\\]|\\.)*"|'[^']*')|#.*/g, (match, quoted) => quoted || '');
+    const header = !continuation && /^\s*\[(.+)\]\s*$/.exec(headerText);
+    const array = !!header && header[1].startsWith('[');
+    const table = header ? tableIdentity(array ? header[1].slice(1, -1).trim() : header[1].trim()) : undefined;
+    const assignment = !continuation && /^\s*([A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')\s*=/.exec(line);
+    const key = assignment ? Object.keys(parseToml(`${assignment[1]} = true`))[0] : undefined;
     for (let i = 0; i < line.length; i++) {
       if (multiline) {
         if (multiline === '"' && line[i] === '\\') { i++; continue; }
@@ -361,7 +408,19 @@ export function patchToml(src: string, section: string, values: Record<string, T
       } else if (c === '[' || c === '{') depth++;
       else if (c === ']' || c === '}') depth--;
     }
+    return { table, array, key, continues: !!multiline || depth > 0 };
   };
+}
+/** Edits only the named table; unrelated tables and comments retain their original text. */
+export function patchToml(src: string, section: string, values: Record<string, TomlValue>): string {
+  try { parseToml(src.replace(/^\uFEFF/, '')); } catch { throw new Error('原配置不是有效的 TOML，已停止修改'); }
+  const lines = src.replace(/^\uFEFF/, '').split(/\r?\n/);
+  const out: string[] = [];
+  const target = tableIdentity(section);
+  let current = '';
+  let found = section === '', skipping = false;
+  const written = new Set<string>();
+  const scan = tomlLineScanner();
   const appendMissing = () => {
     for (const [key, value] of Object.entries(values)) {
       if (!written.has(key) && value !== null) out.push(`${key} = ${toml(value)}`);
@@ -369,23 +428,18 @@ export function patchToml(src: string, section: string, values: Record<string, T
     }
   };
   for (const line of lines) {
-    const continuation = !!multiline || depth > 0;
-    const headerText = line.replace(/("(?:[^"\\]|\\.)*"|'[^']*')|#.*/g, (match, quoted) => quoted || '');
-    const header = !continuation && /^\s*\[(.+)\]\s*$/.exec(headerText);
-    if (header) {
+    const { table, array, key, continues } = scan(line);
+    if (table !== undefined) {
       if (current === target) appendMissing();
-      current = header[1].startsWith('[') ? '@array:' + header[1] : tableIdentity(header[1].trim());
+      current = array ? '@array:' + table : table;
       if (current === target) found = true;
     }
-    const assignment = !continuation && /^\s*([A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')\s*=/.exec(line);
-    const key = assignment ? Object.keys(parseToml(`${assignment[1]} = true`))[0] : undefined;
     const replace = current === target && key !== undefined && Object.hasOwn(values, key);
     if (replace) {
       if (!written.has(key) && values[key] !== null) out.push(`${key} = ${toml(values[key]!)}`);
       written.add(key);
     } else if (!skipping) out.push(line);
-    scan(line);
-    skipping = (skipping || replace) && (!!multiline || depth > 0);
+    skipping = (skipping || replace) && continues;
   }
   if (current === target) appendMissing();
   if (!found) { out.push('', `[${section}]`); appendMissing(); }

@@ -1,5 +1,12 @@
 import type { ProviderBalanceQuery } from './providerBalanceTypes.js';
 
+export function providerOrigin(url?: string): string | undefined {
+  try {
+    const parsed = new URL(url ?? '');
+    return ['https:', 'http:'].includes(parsed.protocol) ? parsed.origin : undefined;
+  } catch { return undefined; }
+}
+
 export const BALANCE_ADAPTERS = ['auto', 'disabled', 'deepseek', 'moonshot', 'openrouter', 'stepfun', 'novita', 'sub2api', 'newapi', 'custom'] as const;
 const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const fields = new Set(['adapter', 'auth', 'token', 'url', 'method', 'authHeader', 'authScheme', 'headers', 'body', 'balancePath', 'totalPath', 'usedPath', 'scope', 'currency', 'multiplier']);

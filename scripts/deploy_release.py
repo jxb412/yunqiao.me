@@ -8,10 +8,9 @@ import re
 import secrets
 import shlex
 
-from remote_ssh import connect, execute
+from remote_ssh import connect, execute, web_root
 
 ROOT = Path(__file__).resolve().parents[1]
-DESTINATION = '/www/wwwroot/ai.haowucm.cn/releases'
 
 
 def file_record(path):
@@ -92,11 +91,11 @@ def same_file(observed, expected):
     return observed is not None and all(observed[key] == expected[key] for key in ('bytes', 'sha256'))
 
 
-def upload_files(client, release_dir, records, replace_existing=False):
+def upload_files(client, release_dir, records, destination, replace_existing=False):
     # Preflight every destination before uploading anything, including shared metadata files.
     observations = {}
     for record in records:
-        target = DESTINATION + '/' + record['file']
+        target = destination + '/' + record['file']
         observed = remote_record(client, target)
         observations[record['file']] = observed
         if observed is not None and not same_file(observed, record) and not replace_existing:
@@ -109,14 +108,14 @@ def upload_files(client, release_dir, records, replace_existing=False):
         return None
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup = '/www/aurora-backups/' + stamp + '-' + secrets.token_hex(4) + '-release-upload'
-    execute(client, 'test -d ' + shlex.quote(DESTINATION))
+    execute(client, 'test -d ' + shlex.quote(destination))
     execute(client, 'install -d -m 700 -- ' + ' '.join(shlex.quote(path) for path in (backup, backup + '/incoming', backup + '/previous')))
     print('Private staging/backup: ' + backup, flush=True)
     with client.open_sftp() as sftp:
         for record in pending:
             name = record['file']
             staged = backup + '/incoming/' + name
-            target = DESTINATION + '/' + name
+            target = destination + '/' + name
             print('Uploading: ' + name, flush=True)
             sftp.put(str(release_dir / name), staged, confirm=True)
             sftp.chmod(staged, 0o600)
@@ -150,8 +149,9 @@ def main():
     if not args.apply:
         print('Dry run: local artifacts verified; website unchanged. Use --apply to upload.')
         return
+    destination = web_root() + '/releases'
     with connect() as client:
-        upload_files(client, release_dir, records, args.replace_existing)
+        upload_files(client, release_dir, records, destination, args.replace_existing)
     print('Upload complete. Update metadata is unchanged. Next run:')
     print('python scripts/publish_update.py --release-dir "' + str(release_dir) + '" --apply')
 

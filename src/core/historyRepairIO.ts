@@ -46,7 +46,8 @@ export function historyContext(): HistoryContext {
 }
 export function inside(root: string, file: string): boolean { const relative = path.relative(path.resolve(root), path.resolve(file)); return !!relative && !relative.startsWith('..') && !path.isAbsolute(relative); }
 export function checkedFile(root: string, file: string): string {
-  const realRoot = fs.realpathSync(root), realFile = fs.realpathSync(file);
+  // Codex stores long Windows paths even if the client home uses an 8.3 alias.
+  const realRoot = fs.realpathSync.native(root), realFile = fs.realpathSync.native(file);
   if (!inside(realRoot, realFile)) throw new Error('文件路径不属于本次修复目录');
   if (fs.lstatSync(file).isSymbolicLink() || !fs.statSync(file).isFile()) throw new Error('修复不接受外部链接或非普通文件');
   return realFile;

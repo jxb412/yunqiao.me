@@ -1,15 +1,18 @@
 """Publish verified default catalog models, retaining custom providers and availability choices."""
-import argparse,json,posixpath,shlex
+import argparse,json,shlex
 from pathlib import Path
 from datetime import datetime,timezone
-from remote_ssh import connect,execute
+from remote_ssh import connect,execute,web_root
 parser=argparse.ArgumentParser();parser.add_argument('--apply',action='store_true');args=parser.parse_args()
 root=Path(__file__).resolve().parents[1];seed=json.loads((root/'server/seed-catalog.json').read_text(encoding='utf-8'))
 print('Verified defaults:',len(seed['providers']),'vendors,',sum(len(p.get('models',[])) for p in seed['providers']),'models')
-if not args.apply:raise SystemExit('Use --apply to publish after reviewing model sources.')
+if not args.apply:
+ print('Use --apply to publish after reviewing model sources.')
+ raise SystemExit(0)
+webroot=web_root()
 stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ');backup='/www/aurora-backups/catalog-'+stamp
 php='''<?php
-require '/www/wwwroot/ai.haowucm.cn/lib.php';
+require $argv[1].'/lib.php';
 $lock=fopen(data_path('catalog-write.lock'),'c');if(!$lock||!flock($lock,LOCK_EX))throw new RuntimeException('lock unavailable');
 $current=catalog();$seed=json_decode(file_get_contents(__DIR__.'/seed.json'),true,512,JSON_THROW_ON_ERROR);
 if(!copy(data_path('catalog.json'),__DIR__.'/catalog-before.json'))throw new RuntimeException('backup failed');
@@ -26,6 +29,6 @@ with connect() as client:
   with sftp.open(backup+'/seed.json','w') as f:f.write(json.dumps(seed,ensure_ascii=False))
   with sftp.open(backup+'/apply.php','w') as f:f.write(php)
   sftp.chmod(backup+'/seed.json',0o600);sftp.chmod(backup+'/apply.php',0o600)
- print(execute(client,'/www/server/php/82/bin/php '+shlex.quote(backup+'/apply.php')).strip())
+ print(execute(client,'/www/server/php/82/bin/php '+shlex.quote(backup+'/apply.php')+' '+shlex.quote(webroot)).strip())
  execute(client,'chown www:www /www/aurora-data/catalog.json /www/aurora-data/catalog-write.lock && chmod 600 /www/aurora-data/catalog.json /www/aurora-data/catalog-write.lock')
  print('Original catalog retained:',backup+'/catalog-before.json')

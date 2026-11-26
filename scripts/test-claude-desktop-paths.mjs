@@ -63,6 +63,41 @@ try {
     const f = fixture(); write(profile(f.base), profileValue); const preview = adapter.preview(context); assert(preview.ok); fs.mkdirSync(f.pkg, { recursive: true });
     const applied = adapter.connect({ ...context, expectedRevision: preview.revision }); assert.equal(applied.ok, false); assert(!fs.existsSync(api.claudeDesktopConfigFiles(f.base)[0])); assert(!fs.existsSync(f.msix));
   });
+  check('Claude startup preferences survive switching and restoring a previously absent 3P config', () => {
+    const f = fixture(), paths = api.claudeDesktopConfigFiles(f.base);
+    const first = adapter.connect(context); assert(first.ok, first.message);
+    const native = { preferences: { showTips: false }, coworkUserFilesPath: 'C:/fixture/work' };
+    write(paths[1], { deploymentMode: '3p', ...native });
+    const second = adapter.connect({ ...context, token: 'second-fixture-token', previousBackup: first.backup }); assert(second.ok, second.message);
+    const current = JSON.parse(fs.readFileSync(paths[1]));
+    assert.deepEqual(current, { deploymentMode: '3p', ...native });
+    const installed = fs.readFileSync(paths[3]), sealed = { ...JSON.parse(installed), inferenceGatewayApiKey: '__sealed__:v1:foreign-test-value' };
+    write(paths[3], sealed);
+    const bytes = fs.readFileSync(paths[3]);
+    const switchConflict = adapter.connect({ ...context, previousBackup: second.backup });
+    assert.equal(switchConflict.ok, false); assert.match(switchConflict.message, /加密保存/);
+    const restoreConflict = adapter.disconnect(second.backup);
+    assert.equal(restoreConflict.ok, false); assert.match(restoreConflict.message, /加密保存/);
+    assert.deepEqual(fs.readFileSync(paths[3]), bytes);
+    fs.writeFileSync(paths[3], installed);
+    write(paths[1], { ...current, unexpected: true });
+    assert.equal(adapter.disconnect(second.backup).ok, false);
+    write(paths[1], current);
+    const restored = adapter.disconnect(second.backup); assert(restored.ok, restored.message);
+    assert.deepEqual(JSON.parse(fs.readFileSync(paths[1])), native);
+    assert(!fs.existsSync(paths[0]));
+  });
+  check('A verified older backup can preserve new preferences without permitting unknown edits', () => {
+    const f = fixture(), paths = api.claudeDesktopConfigFiles(f.base);
+    write(paths[1], { customSetting: 4, preferences: { showTips: true } });
+    const first = adapter.connect(context); assert(first.ok, first.message);
+    const manifest = JSON.parse(fs.readFileSync(first.backup));
+    for (const entry of manifest.files) delete entry.claudePreferencesHash;
+    write(first.backup, manifest);
+    write(paths[1], { ...JSON.parse(fs.readFileSync(paths[1])), preferences: { showTips: false } });
+    const result = adapter.disconnect(first.backup); assert(result.ok, result.message);
+    assert.deepEqual(JSON.parse(fs.readFileSync(paths[1])), { customSetting: 4, preferences: { showTips: false } });
+  });
   check('Read-only configuration checks detect gateway port and token drift without changing files', () => {
     const f = fixture(); fs.mkdirSync(f.pkg, { recursive: true }); const applied = adapter.connect(context); assert(applied.ok, applied.message);
     const files = adapter.configPaths(), before = files.map(file => fs.readFileSync(file));

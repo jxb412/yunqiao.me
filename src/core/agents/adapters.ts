@@ -392,7 +392,7 @@ const geminiCli = makeAdapter({
   },
 });
 const manualSpecs: AdapterSpec[] = [
-  { id: 'workbuddy', name: 'WorkBuddy / CodeBuddy', vendor: '腾讯', category: 'desktop', protocol: 'openai-chat', support: 'manual', desktop: ['WorkBuddy', 'CodeBuddy'], description: '腾讯 AI 工作助手，提供适配供应商的连接参数。', supportNote: '不同版本的自定义模型入口和协议支持有差异。请在客户端支持的自定义模型页面填写参数，云桥不写入未经验证的配置字段。', docsUrl: 'https://www.codebuddy.ai/' },
+  { id: 'workbuddy', name: 'WorkBuddy / CodeBuddy', vendor: '腾讯', category: 'desktop', protocol: 'openai-chat', support: 'manual', desktop: ['WorkBuddy', 'CodeBuddy', 'CodeBuddy CN'], description: '腾讯 AI 工作助手，提供适配供应商的连接参数。', supportNote: '不同版本的自定义模型入口和协议支持有差异。请在客户端支持的自定义模型页面填写参数，云桥不写入未经验证的配置字段。', docsUrl: 'https://www.codebuddy.ai/' },
   { id: 'deepseek', name: 'DeepSeek API / 兼容客户端', vendor: '深度求索', category: 'service', protocol: 'openai-chat', support: 'manual', description: '为支持 OpenAI 兼容接口的客户端生成 DeepSeek 等模型的连接参数。', supportNote: 'DeepSeek 是模型服务。可把参数填入支持自定义接口的应用；不会替换 DeepSeek 官方网页或 App 的模型。', docsUrl: 'https://api-docs.deepseek.com/' },
   { id: 'qwen-code', name: 'Qwen Code', vendor: '阿里云', category: 'cli', protocol: 'openai-chat', support: 'manual', command: 'qwen', description: '通义千问终端编程助手，提供 OpenAI 兼容接入参数。', supportNote: '按下方指南合并 settings.json 中的模型、认证和令牌设置，重新启动后选择对应模型。', docsUrl: 'https://qwenlm.github.io/qwen-code-docs/' },
   { id: 'kimi-code', name: 'Kimi Code', vendor: '月之暗面', category: 'cli', protocol: 'openai-chat', support: 'manual', command: 'kimi', description: 'Kimi 编程助手，可按官方模型配置接入。', supportNote: '按下方指南生成独立 TOML 配置，填写实际上下文容量，并通过 --config-file 指定；原有官方登录配置保留。', docsUrl: 'https://moonshotai.github.io/kimi-cli/' },

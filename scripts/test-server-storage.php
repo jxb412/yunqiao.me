@@ -63,6 +63,12 @@ echo "PASS release editing preserves valid hashes and rejects stale or malformed
 $provider = normalize_provider(['baseUrl' => 'https://example.test', 'models' => [['id' => 'only-known-id']]]);
 foreach (['contextWindow', 'inputPrice', 'outputPrice'] as $field) storage_check(!array_key_exists($field, $provider['models'][0]), 'Unknown model field must stay unknown');
 echo "PASS unknown model metadata stays absent\n";
+$display = ['baseUrl' => 'https://example.test', 'key' => 'Research & "QA"', 'icon' => '◆', 'color' => ' #AbCd '];
+$normalized = normalize_provider($display);
+storage_check($normalized['key'] === $display['key'] && $normalized['icon'] === '◆' && $normalized['color'] === '#AbCd', 'Brand color and display data must round-trip');
+$display['color'] = 'not a color';
+storage_check(normalize_provider($display)['color'] === '#6d8cff', 'Unsupported colors must use the default');
+echo "PASS provider branding accepts hexadecimal colors and retains literal keys and icons\n";
 $statistics = ['days' => ['2026-01-01' => ['ping' => 3]], 'clients' => []];
 store_write('analytics.json', $statistics);
 mkdir($root . '/analytics.json.tmp' . getmypid());

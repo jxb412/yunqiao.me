@@ -4,20 +4,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 import posixpath
 import shlex
-from remote_ssh import connect, execute
+from remote_ssh import connect, execute, web_root
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--apply', action='store_true', help='Perform the displayed deployment plan')
 parser.add_argument('--php-bin', default='/www/server/php/82/bin/php', help='Remote PHP 8.1+ CLI path, matching the website FPM version')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
-webroot = '/www/wwwroot/ai.haowucm.cn'
 files = ['lib.php', 'api.php', 'pub.php', 'index.php', 'member_service.php', 'member.php', 'member_admin.php', 'catalog_sync.php', 'catalog_sync_admin.php']
-print('PHP deployment:', ', '.join(files), '->', webroot)
+print('PHP deployment:', ', '.join(files))
 print('Remote PHP syntax checks:', args.php_bin)
 print('Existing catalog, administrator settings and release metadata are preserved.')
 if not args.apply:
-    raise SystemExit('Review the files, then run with --apply to deploy.')
+    print('Review the files, then run with --apply to deploy to AURORA_WEB_ROOT.')
+    raise SystemExit(0)
+webroot = web_root()
 stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
 backup = '/www/aurora-backups/' + stamp
 stage = backup + '/staged'

@@ -53,6 +53,7 @@ export function desktopCandidates(names: readonly string[], ctx: ClientPathConte
   const roaming = !ctx.isolated && environmentValue(ctx, 'APPDATA') || paths.join(ctx.home, 'AppData', 'Roaming');
   return names.flatMap(name => ctx.platform === 'win32' ? [
     paths.join(local, 'Programs', name, `${name}.exe`), paths.join(local, name, `${name}.exe`),
+    ...(name.toLowerCase() === 'claude' ? [paths.join(local, 'AnthropicClaude', 'claude.exe')] : []),
     paths.join(local, 'OpenAI', name, `${name}.exe`), paths.join(local, 'Microsoft', 'WindowsApps', `${name}.exe`),
     paths.join(roaming, 'Microsoft', 'Windows', 'Start Menu', 'Programs', `${name}.lnk`),
   ] : ctx.platform === 'darwin' ? [

@@ -155,6 +155,22 @@ try {
     fs.appendFileSync(shim, '@rem changed\r\n'); assert.equal(api.nativeClientLifecycleRuntime.validateTarget(target), false);
     for (const command of [process.execPath, 'C:\\Windows\\System32\\cmd.exe', 'powershell.exe', 'C:\\Apps\\Claude.exe\nwhoami']) await assert.rejects(() => api.nativeClientLifecycleRuntime.resolveTarget('claude-desktop', { installed: true, configured: false, command }));
   });
+  if (process.platform === 'win32') await check('The Claude Squirrel launcher identifies the versioned process even with multiple releases on disk', async () => {
+    const root = path.join(temporary, 'AppData', 'Local', 'AnthropicClaude');
+    const launcher = path.join(root, 'claude.exe');
+    const main = path.join(root, 'app-' + process.versions.node, 'claude.exe');
+    fs.mkdirSync(path.dirname(main), { recursive: true });
+    fs.copyFileSync(process.execPath, launcher);
+    fs.linkSync(launcher, main);
+    const other = path.join(root, 'app-99.99.99', 'claude.exe');
+    fs.mkdirSync(path.dirname(other)); fs.writeFileSync(other, 'unused fixture');
+    const runtime = api.nativeClientLifecycleRuntime;
+    const detected = runtime.detect('claude-desktop');
+    assert.equal(detected.command, launcher);
+    assert.equal((await runtime.resolveTarget('claude-desktop', detected)).executable, fs.realpathSync.native(main));
+    fs.unlinkSync(main);
+    await assert.rejects(() => runtime.resolveTarget('claude-desktop', detected), /安装版本/);
+  });
   console.log(`Client lifecycle: ${checks} checks passed`);
 } finally {
   if (previousClientHome === undefined) delete process.env.AURORA_CLIENT_HOME; else process.env.AURORA_CLIENT_HOME = previousClientHome;

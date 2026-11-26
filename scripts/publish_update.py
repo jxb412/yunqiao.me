@@ -12,11 +12,10 @@ import re
 import shlex
 import urllib.request
 
-from remote_ssh import connect, execute
+from remote_ssh import connect, execute, web_root
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_URL = 'https://ai.haowucm.cn/releases/'
-WEB_ROOT = '/www/wwwroot/ai.haowucm.cn'
 TARGETS = {'win-x64': 'win-x64-setup.exe', 'mac-arm64': 'mac-arm64.dmg', 'mac-x64': 'mac-x64.dmg'}
 
 
@@ -69,15 +68,15 @@ def verify_public_files(payload, sizes):
                 raise RuntimeError(f'Public package is absent, redirected, or has the wrong length: {target}')
 
 
-def publication_program(payload, sizes):
-    encoded = base64.b64encode(json.dumps({'update': payload, 'sizes': sizes}).encode('utf-8')).decode('ascii')
+def publication_program(payload, sizes, webroot):
+    encoded = base64.b64encode(json.dumps({'update': payload, 'sizes': sizes, 'webroot': webroot}).encode('utf-8')).decode('ascii')
     return """
-require '%s/lib.php';
-if(!is_file(data_path('config.json')))throw new RuntimeException('Existing site configuration is required');
 $input=json_decode(base64_decode('%s'),true,512,JSON_THROW_ON_ERROR);
+require $input['webroot'].'/lib.php';
+if(!is_file(data_path('config.json')))throw new RuntimeException('Existing site configuration is required');
 $payload=$input['update'];
 foreach($payload['files'] as $platform=>$url) {
-  $file='%s/releases/'.basename(parse_url($url,PHP_URL_PATH));
+  $file=$input['webroot'].'/releases/'.basename(parse_url($url,PHP_URL_PATH));
   if(!is_file($file)||filesize($file)!==$input['sizes'][$platform]
      ||!hash_equals($payload['sha256'][$platform],hash_file('sha256',$file)))
     throw new RuntimeException('Uploaded package size/SHA256 mismatch: '.$platform);
@@ -99,7 +98,7 @@ $result=config_update(function(array $cfg) use($payload,&$backup):array {
 echo json_encode(['ok'=>true,'version'=>$result['update']['version'],
   'files'=>$result['update']['files'],'sha256'=>$result['update']['sha256'],
   'publishedAt'=>$result['update']['publishedAt'],'backup'=>data_path($backup)],JSON_UNESCAPED_SLASHES);
-""" % (WEB_ROOT, encoded, WEB_ROOT)
+""" % encoded
 
 
 def main():
@@ -114,8 +113,8 @@ def main():
     if not args.apply:
         print('Dry run: local artifacts verified; website metadata unchanged. Use --apply after mirroring the packages.')
         return
+    program = publication_program(payload, sizes, web_root())
     verify_public_files(payload, sizes)
-    program = publication_program(payload, sizes)
     with connect() as client:
         print(execute(client, 'runuser -u www -- /www/server/php/82/bin/php -r ' + shlex.quote(program)))
 

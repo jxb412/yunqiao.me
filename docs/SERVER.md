@@ -1,6 +1,6 @@
 # 远端目录与版本服务
 
-现有站点：`https://ai.haowucm.cn`，服务器网站目录 `/www/wwwroot/ai.haowucm.cn`。2026-11-16 已将官网备用更新发布为 **0.6.3**，Windows x64、macOS Apple Silicon arm64 和 Intel x64 均提供对应安装包与 SHA256。
+官网 `https://ai.haowucm.cn` 于 2026-11-16 将备用更新发布为 **0.6.3**，Windows x64、macOS Apple Silicon arm64 和 Intel x64 均提供对应安装包与 SHA256。
 
 ## 客户端读取
 
@@ -62,7 +62,7 @@ Windows 便携 PHP 没有全局 `php.ini`，会员测试需附加 `-d extension_
 
 ## 部署
 
-SSH 主机默认为 `58.49.150.136:4413`，用户默认为 `root`。所有密码通过交互输入或 `AURORA_SSH_PASSWORD` 环境变量传入；源码与安装包不内置 SSH 密码。主机指纹保存在 `scripts/ssh-host-fingerprint.txt`，换服务器时先核实并配置 `AURORA_SSH_FINGERPRINT`。
+在部署终端设置 `AURORA_SSH_HOST`、`AURORA_SSH_USER` 和远端网站的绝对路径 `AURORA_WEB_ROOT`。非标准 SSH 端口通过 `AURORA_SSH_PORT` 指定。通过可信渠道核对主机公钥，配置部署用户的 `known_hosts` 或设置 `AURORA_SSH_FINGERPRINT`。使用密码认证时，在终端提示处输入密码，或由部署环境注入 `AURORA_SSH_PASSWORD`。
 
 ```powershell
 # 只显示部署计划

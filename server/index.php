@@ -285,7 +285,7 @@ document.getElementById('pwd').addEventListener('keydown', e=>{ if(e.key==='Ente
           <div class="field"><label>Linux x64 下载地址</label><input id="uLinux" placeholder="填写已上传的 Linux x64 安装包完整地址"></div>
         </div>
         <div class="foot" style="position:static;background:none"><button class="btn primary" id="btnSaveUpdate">保存</button></div>
-        <p class="sub" style="margin-top:10px">把安装包上传到 <code>/www/wwwroot/ai.haowucm.cn/releases/</code>，再用上面的地址引用即可。</p>
+        <p class="sub" style="margin-top:10px">把安装包上传到网站根目录下的 <code>releases/</code>，再填写对应的公开下载地址。</p>
       </div>
     </section>
 
@@ -394,7 +394,7 @@ function render(){
     <div class="card"><div class="k">供应商</div><div class="v">${ps.length}</div></div>
     <div class="card"><div class="k">已启用</div><div class="v">${enabled}</div></div>
     <div class="card"><div class="k">模型条目</div><div class="v">${models}</div></div>
-    <div class="card"><div class="k">目录版本</div><div class="v">v${state.catalog.version||0}</div></div>`;
+    <div class="card"><div class="k">目录版本</div><div class="v">v${esc(state.catalog.version||0)}</div></div>`;
   document.getElementById('pubUrl').textContent = state.publicUrl + '/pub.php?action=catalog';
   document.getElementById('statsBox').textContent =
     '目录版本 v' + (state.catalog.version||0) + ' · 更新于 ' + (state.catalog.updatedAt||'-') +
@@ -411,19 +411,21 @@ function render(){
   const rows = document.getElementById('rows');
   rows.innerHTML = list.map(p=>{
     const regionMap={cn:'国内',global:'海外',relay:'中转',local:'本地',subscription:'订阅'};
-    return `<tr data-key="${p.key}">
-      <td><input class="chk" type="checkbox" data-sel="${p.key}" ${selected.has(p.key)?'checked':''}></td>
-      <td><div class="ico" style="color:${p.color||'#6d8cff'}">${p.icon||'◆'}</div></td>
+    const key = esc(p.key);
+    const color = typeof p.color === 'string' && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(p.color) ? p.color : '#6d8cff';
+    return `<tr data-key="${key}">
+      <td><input class="chk" type="checkbox" data-sel="${key}" ${selected.has(p.key)?'checked':''}></td>
+      <td><div class="ico" style="color:${color}">${esc(p.icon||'◆')}</div></td>
       <td><div style="font-weight:600">${esc(p.name)}</div><div class="mono">${esc(p.baseUrl||'')}</div></td>
       <td>${esc(p.vendor||'')}</td>
-      <td><span class="pill">${fmtProto(p.format)}</span></td>
+      <td><span class="pill">${esc(fmtProto(p.format))}</span></td>
       <td>${(p.models||[]).length}</td>
-      <td><span class="pill ${p.region==='cn'?'cn':'gl'}">${regionMap[p.region]||p.region||'-'}</span></td>
+      <td><span class="pill ${p.region==='cn'?'cn':'gl'}">${esc(regionMap[p.region]||p.region||'-')}</span></td>
       <td><span class="pill ${p.enabled?'ok':'off'}">${p.enabled?'启用':'停用'}</span></td>
       <td>
-        <button class="btn sm" data-act="edit" data-key="${p.key}">编辑</button>
-        <button class="btn sm" data-act="toggle" data-key="${p.key}">${p.enabled?'停用':'启用'}</button>
-        <button class="btn sm danger" data-act="del" data-key="${p.key}">删</button>
+        <button class="btn sm" data-act="edit" data-key="${key}">编辑</button>
+        <button class="btn sm" data-act="toggle" data-key="${key}">${p.enabled?'停用':'启用'}</button>
+        <button class="btn sm danger" data-act="del" data-key="${key}">删</button>
       </td></tr>`;
   }).join('');
   document.getElementById('empty').classList.toggle('hide', list.length>0);
@@ -525,9 +527,9 @@ function renderModels(){
   box.innerHTML = (editing.models||[]).map((m,i)=>`
     <div class="mrow">
       <input value="${esc(m.id)}" data-m="${i}" data-k="id" placeholder="填写供应商实际模型 ID">
-      <input value="${m.contextWindow||''}" data-m="${i}" data-k="contextWindow" type="number" placeholder="待确认">
-      <input value="${m.inputPrice??''}" data-m="${i}" data-k="inputPrice" type="number" step="0.01" placeholder="待确认">
-      <input value="${m.outputPrice??''}" data-m="${i}" data-k="outputPrice" type="number" step="0.01" placeholder="待确认">
+      <input value="${esc(m.contextWindow||'')}" data-m="${i}" data-k="contextWindow" type="number" placeholder="待确认">
+      <input value="${esc(m.inputPrice??'')}" data-m="${i}" data-k="inputPrice" type="number" step="0.01" placeholder="待确认">
+      <input value="${esc(m.outputPrice??'')}" data-m="${i}" data-k="outputPrice" type="number" step="0.01" placeholder="待确认">
       <button class="btn sm danger" data-del="${i}">×</button>
     </div>`).join('');
   box.querySelectorAll('[data-m]').forEach(inp=>{

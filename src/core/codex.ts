@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parse as parseToml } from 'smol-toml';
-import { applyPlan, patchToml, planned, readText } from './agents/configFiles.js';
+import { isDeepStrictEqual } from 'node:util';
+import { parse as parseToml, TomlError } from 'smol-toml';
+import { applyPlan, patchToml, planned, readText, tomlLineScanner } from './agents/configFiles.js';
 import { runningCodingClientsSync } from './clientProcesses.js';
 import { defaultAutoCompactTokenLimit } from './modelContext.js';
 
@@ -222,25 +223,44 @@ export interface CodexAsset {
   mutable?: boolean;
 }
 
-function skillEnabled(skillPath: string): boolean {
-  try {
-    const txt = readText(codexConfigPath());
-    const blocks = txt.split(/^\s*\[\[skills\.config\]\]\s*$/m).slice(1);
-    let enabled = true;
-    for (const block of blocks) {
-      const content = block.split(/^\s*\[/m)[0];
-      const value = /^\s*path\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/m.exec(content)?.[1];
-      if (!value) continue;
-      const selected = value.startsWith('"') ? JSON.parse(value) : value.slice(1, -1);
-      if (path.resolve(selected) === path.resolve(skillPath)) enabled = !/^\s*enabled\s*=\s*false\b/m.test(content);
+interface ResourceBlock { header: number; flag?: number }
+interface ResourceSettings { enabled?: boolean; command?: string; path?: string }
+function resourceConfig(text: string) {
+  const parsed = parseToml(text.replace(/^\uFEFF/, '')) as { skills?: { config?: ResourceSettings[] }; mcp_servers?: Record<string, ResourceSettings> };
+  const lines: string[] = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const servers = new Map<string, ResourceBlock>(), skills: ResourceBlock[] = [];
+  const scan = tomlLineScanner();
+  let block: ResourceBlock | undefined;
+  for (const [index, line] of lines.entries()) {
+    const { table, array, key } = scan(line);
+    if (table !== undefined) {
+      block = undefined;
+      const parts: string[] = JSON.parse(table);
+      if (parts.length === 2 && !array && parts[0] === 'mcp_servers') {
+        block = { header: index };
+        servers.set(parts[1], block);
+      } else if (array && parts[0] === 'skills' && parts[1] === 'config' && parts.length === 2) {
+        block = { header: index };
+        skills.push(block);
+      }
     }
-    return enabled;
-  } catch { return true; }
+    if (block && key === 'enabled') block.flag = index;
+  }
+  const entries = Array.isArray(parsed.skills?.config) ? parsed.skills.config : [];
+  const writableSkills = parsed.skills === undefined || (parsed.skills && Object.getPrototypeOf(parsed.skills) === null &&
+    (parsed.skills.config === undefined || skills.length > 0 && skills.length === entries.length));
+  return { parsed, lines, servers, skills, entries, writableSkills };
+}
+
+function sameSkill(entry: ResourceSettings, file: string): boolean {
+  return typeof entry?.path === 'string' && path.relative(file, path.resolve(entry.path)) === '';
 }
 
 export function listCodexAssets(): CodexAsset[] {
   const home = codexHome();
   const out: CodexAsset[] = [];
+  let config: ReturnType<typeof resourceConfig> | undefined;
+  try { config = resourceConfig(readText(codexConfigPath())); } catch { /* Installed files can still be listed. */ }
 
   const scan = (dir: string, kind: 'plugin' | 'skill') => {
     let entries: fs.Dirent[] = [];
@@ -267,7 +287,8 @@ export function listCodexAssets(): CodexAsset[] {
       } catch {
         /* 没有描述也无所谓 */
       }
-      out.push({ id: `${kind}:${name}`, kind, name, path: full, enabled: kind === 'skill' ? skillEnabled(path.join(full, 'SKILL.md')) : true, description: desc, mutable: kind === 'skill' });
+      const settings = kind === 'skill' ? config?.entries.filter(entry => sameSkill(entry, path.join(full, 'SKILL.md'))) : undefined;
+      out.push({ id: `${kind}:${name}`, kind, name, path: full, enabled: !settings?.some(entry => entry.enabled === false), description: desc, mutable: kind === 'skill' && !!config?.writableSkills });
     }
   };
 
@@ -289,28 +310,13 @@ export function listCodexAssets(): CodexAsset[] {
   }
 
   // MCP 服务器（从 config.toml 里读）
-  try {
-    const txt = readText(codexConfigPath());
-    const re = /^\[mcp_servers\.([^\]]+)\]/gm;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(txt))) {
-      const name = m[1];
-      const tail = txt.slice(m.index + m[0].length);
-      const next = tail.search(/^\s*\[/m);
-      const block = next >= 0 ? tail.slice(0, next) : tail;
-      const cmd = /command\s*=\s*"([^"]+)"/.exec(block)?.[1] ?? '';
-      out.push({
-        id: `mcp:${name}`,
-        kind: 'mcp',
-        name,
-        enabled: !/^\s*enabled\s*=\s*false\b/m.test(block),
-        path: codexConfigPath(),
-        description: cmd ? `命令：${cmd}` : '已配置的 MCP 服务器',
-        mutable: /^[A-Za-z0-9_-]+$/.test(name),
-      });
-    }
-  } catch {
-    /* 没配置过 MCP */
+  for (const [name, server] of Object.entries(config?.parsed.mcp_servers ?? {})) {
+    if (!server || typeof server !== 'object' || Array.isArray(server)) continue;
+    out.push({
+      id: `mcp:${name}`, kind: 'mcp', name, enabled: server.enabled !== false, path: codexConfigPath(),
+      description: typeof server.command === 'string' ? `命令：${server.command}` : '已配置的 MCP 服务器',
+      mutable: config!.servers.has(name),
+    });
   }
 
   return out;
@@ -324,28 +330,45 @@ export function toggleCodexAsset(id: string, enabled: boolean): { ok: boolean; m
   try {
     const plan = planned(file, '');
     let txt = plan.before;
-    try { parseToml(txt.replace(/^\uFEFF/, '')); } catch { throw new Error('原配置不是有效的 TOML，已停止修改'); }
-    if (asset.kind === 'mcp') txt = patchToml(txt, `mcp_servers.${asset.name}`, { enabled });
-    else if (asset.kind === 'skill') {
+    const config = resourceConfig(txt);
+    const blocks: ResourceBlock[] = [];
+    const eol = txt.includes('\r\n') ? '\r\n' : '\n';
+    if (asset.kind === 'mcp') {
+      const block = config.servers.get(asset.name), server = config.parsed.mcp_servers?.[asset.name];
+      if (!block || !server) throw new Error('MCP 配置已变化，请刷新列表');
+      blocks.push(block);
+      server.enabled = enabled;
+    } else {
+      if (!config.writableSkills) throw new Error('请通过 Codex 管理此格式的技能配置');
       const selected = path.join(asset.path!, 'SKILL.md');
-      if (/"""|'''/.test(txt)) throw new Error('此 TOML 包含多行字符串，请通过 Codex 管理技能');
-      const re = /^\s*\[\[skills\.config\]\]\s*\r?\n[\s\S]*?(?=^\s*\[|$(?![\s\S]))/gm;
-      let matched = false;
-      txt = txt.replace(re, block => {
-        const value = /^\s*path\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/m.exec(block)?.[1];
-        if (!value) return block;
-        const existing = value.startsWith('"') ? JSON.parse(value) : value.slice(1, -1);
-        if (path.resolve(existing) !== path.resolve(selected)) return block;
-        matched = true;
-        return /^\s*enabled\s*=/m.test(block) ? block.replace(/^\s*enabled\s*=.*$/m, `enabled = ${enabled}`) : block.trimEnd() + `\nenabled = ${enabled}\n`;
+      config.entries.forEach((entry, index) => {
+        if (sameSkill(entry, selected)) {
+          blocks.push(config.skills[index]);
+          entry.enabled = enabled;
+        }
       });
-      if (!matched) txt = txt.trimEnd() + `\n\n[[skills.config]]\npath = ${JSON.stringify(selected)}\nenabled = ${enabled}\n`;
+      if (!blocks.length) {
+        const fields = `path = ${JSON.stringify(selected)}${eol}enabled = ${enabled}${eol}`;
+        const skillSettings = config.parsed.skills ??= Object.create(null);
+        (skillSettings.config ??= []).push(parseToml(fields));
+        config.lines.push(`${txt && !txt.endsWith('\n') ? eol : ''}[[skills.config]]${eol}${fields}`);
+      }
     }
-    try { parseToml(txt.replace(/^\uFEFF/, '')); } catch { throw new Error('此 TOML 结构无法安全修改，原配置已保留'); }
+    for (const block of blocks) {
+      if (block.flag !== undefined) {
+        const line = config.lines[block.flag];
+        config.lines[block.flag] = line.replace(/(=\s*)(true|false)(?=[ \t]*(?:#[^\r\n]*)?\r?\n?$)/, (_, prefix) => prefix + enabled);
+      } else {
+        const line = config.lines[block.header], end = line.match(/\r?\n$/)?.[0] ?? '';
+        config.lines[block.header] = line + (end ? '' : eol) + `enabled = ${enabled}` + end;
+      }
+    }
+    txt = config.lines.join('');
+    if (!isDeepStrictEqual(parseToml(txt.replace(/^\uFEFF/, '')), config.parsed)) throw new Error('此 TOML 结构无法安全修改，原配置已保留');
     plan.after = txt;
     applyPlan('codex-resource-toggle', [plan]);
     return { ok: true, message: `已${enabled ? '启用' : '禁用'} ${asset.name}，重启 Codex 后生效。` };
-  } catch (e: any) { return { ok: false, message: String(e?.message ?? e) }; }
+  } catch (e: any) { return { ok: false, message: e instanceof TomlError ? '此 TOML 结构无法安全修改，原配置已保留' : String(e?.message ?? e) }; }
 }
 
 export function readAgentsMd(): string {

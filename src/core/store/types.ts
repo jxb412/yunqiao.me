@@ -177,6 +177,7 @@ export interface Settings {
   usageRetentionDays: number;
   /** 局域网共享网关 */
   lanShare: boolean;
+  keepAwakeWhileSharing: boolean;
   /** 网关访问令牌，局域网共享时必填 */
   gatewayToken: string;
   /** WebDAV 备份 */

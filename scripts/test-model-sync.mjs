@@ -86,6 +86,37 @@ try {
     });
   } finally { store.saveProvider = original; }
   assert.equal(requests, passed);
+  const observed = [];
+  const destination = http.createServer((request, response) => {
+    observed.push(request.headers);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ data: [{ id: 'fixture-destination' }] }));
+  });
+  await new Promise(resolve => destination.listen(0, '127.0.0.1', resolve));
+  try {
+    const newBase = `http://127.0.0.1:${destination.address().port}`;
+    const key = (id, value) => ({ id, key: value, label: id, enabled: true, weight: 1 });
+    const args = { name: 'origin fixture', baseUrl: endpoint, apiKeys: [key('one', 'old-one'), key('two', 'old-two')],
+      headers: { Authorization: 'Bearer old-auth', 'X-Custom': 'old-header' }, balanceQuery: { adapter: 'custom',
+        url: endpoint + '/balance', auth: 'token', token: 'old-balance', balancePath: 'remaining', headers: { Cookie: 'old-cookie' } } };
+    for (const fullDraft of [true, false]) {
+      const source = store.saveProvider(args);
+      const retained = store.saveProvider({ id: source.id, baseUrl: endpoint + '/v1' });
+      assert.deepEqual(retained.apiKeys, source.apiKeys); assert.deepEqual(retained.headers, source.headers); assert.deepEqual(retained.balanceQuery, source.balanceQuery);
+      const saved = store.saveProvider({ ...(fullDraft ? retained : { id: source.id }), baseUrl: newBase });
+      assert(saved.apiKeys.every(item => !item.key)); assert.equal(saved.headers, undefined); assert.equal(saved.balanceQuery, undefined);
+      const discovered = await fetchProviderModels({ store }, { providerId: saved.id });
+      assert.equal(discovered.ok, true); assert(!JSON.stringify(observed.at(-1)).includes('old-'));
+    }
+    const source = store.saveProvider(args);
+    const saved = store.saveProvider({ ...source, baseUrl: newBase, apiKeys: [key('replacement', 'new-key'), key('copied', 'old-two')],
+      headers: { authorization: 'Bearer old-auth', 'X-Old-Under-Another-Name': 'old-header', 'X-New': 'new-header' } });
+    assert.deepEqual(saved.apiKeys.map(item => item.key), ['new-key', '']); assert.deepEqual(saved.headers, { 'X-New': 'new-header' });
+    const discovered = await fetchProviderModels({ store }, { providerId: saved.id });
+    assert.equal(discovered.ok, true); assert.equal(observed.at(-1).authorization, 'Bearer new-key'); assert.equal(observed.at(-1)['x-new'], 'new-header');
+    assert(!JSON.stringify(observed.at(-1)).includes('old-')); assert.equal(observed.length, 3);
+    passed += 3; console.log('PASS origin isolation for full drafts, partial saves and explicit replacement credentials');
+  } finally { destination.closeAllConnections(); await new Promise(resolve => destination.close(resolve)); }
   console.log(`Model synchronization: ${passed} checks passed.`);
 } finally {
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

@@ -17,6 +17,7 @@ __pycache__/
 .reference/
 .env
 .env.*
+member-secrets.json
 scripts/probe-codex-db.cjs
 docs/PROMO.md
 docs/images/*.png

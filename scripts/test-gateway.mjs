@@ -25,6 +25,10 @@ let catalogMode = 'valid';
 const catalog = { version: 7, updatedAt: '2026-11-15T00:00:00Z', providers: [
   { key: 'mock-catalog', name: 'Test catalog', format: 'openai-chat', baseUrl: 'https://example.com/v1', models: [{ id: 'test-model' }] },
 ] };
+const citedText = { type: 'output_text', text: 'Cited answer', annotations: [
+  { type: 'url_citation', url: 'https://source.example', title: 'Source', start_index: 0, end_index: 5 },
+], vendor_extension: 'keep' };
+const refusal = { type: 'refusal', refusal: 'Unrelated content part' };
 const upstream = http.createServer(async (req, res) => {
   if (req.url === '/catalog') {
     res.writeHead(catalogMode === 'offline' ? 503 : 200, { 'content-type': 'application/json' });
@@ -50,7 +54,8 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url === '/v1/responses') {
     const nativeResponse = { id: 'resp-native', status: 'completed', model: body.model,
       output: [{ id: 'ctc-native', type: 'custom_tool_call', call_id: 'call-native', name: 'apply_patch', input: '*** Begin Patch' },
-        { id: 'rs-native', type: 'reasoning', encrypted_content: 'opaque-encrypted-state', summary: [] }],
+        { id: 'rs-native', type: 'reasoning', encrypted_content: 'opaque-encrypted-state', summary: [] },
+        { id: 'msg-native', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Plain answer' }, citedText, refusal] }],
       usage: { input_tokens: 4, output_tokens: 3 } };
     if (body.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -302,6 +307,9 @@ try {
   check('native Responses preserves custom tool request definitions', () => assert.deepEqual(requests.at(-1).body.tools, nativeInput.tools));
   check('native Responses preserves custom tool output and encrypted reasoning', () => {
     assert.equal(nativeOutput.output[0].input, '*** Begin Patch'); assert.equal(nativeOutput.output[1].encrypted_content, 'opaque-encrypted-state');
+  });
+  check('native Responses JSON supplies omitted text annotations and preserves citations and other parts', () => {
+    assert.deepEqual(nativeOutput.output[2].content, [{ type: 'output_text', text: 'Plain answer', annotations: [] }, citedText, refusal]);
   });
   response = await post('/v1/responses', { ...nativeInput, stream: true });
   const nativeStream = await response.text();

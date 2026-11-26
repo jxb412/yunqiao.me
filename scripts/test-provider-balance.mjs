@@ -16,6 +16,24 @@ try {
   const m = createRequire(import.meta.url)(bundle), fresh = () => new m.AuroraStore(path.join(root, `store-${++sequence}`));
   const key = (id = 'key-1', secret = `fixture-${id}`) => ({ id, label: `Label ${id}`, key: secret, enabled: true, weight: 1 });
   const provider = (store, changes = {}) => store.saveProvider({ name: 'Fixture supplier', baseUrl: 'https://api.deepseek.com', models: [], apiKeys: [key()], ...changes });
+  await check('Changing only the billing origin requires fresh token, headers and request body', async () => {
+    const store = fresh();
+    const query = { adapter: 'custom', url: 'https://billing-one.test/status', auth: 'token', token: 'old-billing',
+      headers: { Cookie: 'old-header' }, method: 'POST', body: '{"key":"old-body"}', balancePath: 'remaining' };
+    const first = provider(store, { balanceQuery: query });
+    const same = store.saveProvider({ id: first.id, balanceQuery: { ...query, url: 'https://BILLING-ONE.test:443/v2' } });
+    assert.equal(same.balanceQuery.token, query.token); assert.deepEqual(same.balanceQuery.headers, query.headers);
+    const changed = store.saveProvider({ id: first.id, balanceQuery: { ...query, url: 'https://billing-two.test/status' } });
+    assert.deepEqual(changed.apiKeys, first.apiKeys); assert.equal(changed.balanceQuery.token, undefined);
+    assert.equal(changed.balanceQuery.headers, undefined); assert.equal(changed.balanceQuery.body, undefined);
+    let calls = 0;
+    await m.providerBalance(store, { providerId: first.id }, async () => { calls++; }); assert.equal(calls, 0);
+    const other = provider(store, { balanceQuery: query });
+    const updated = store.saveProvider({ id: other.id, balanceQuery: { ...query, url: 'https://billing-new.test',
+      token: 'fresh-billing', headers: { cookie: 'old-header', 'X-New': 'fresh-header' }, body: '{"key":"fresh-body"}' } });
+    assert.equal(updated.balanceQuery.token, 'fresh-billing'); assert.deepEqual(updated.balanceQuery.headers, { 'X-New': 'fresh-header' });
+    assert.equal(updated.balanceQuery.body, '{"key":"fresh-body"}');
+  });
   const response = (data, status = 200, headers = {}) => {
     const raw = new PassThrough(); process.nextTick(() => raw.end(typeof data === 'string' ? data : JSON.stringify(data)));
     return { status, headers, raw, stream: raw };

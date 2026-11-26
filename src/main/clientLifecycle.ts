@@ -35,7 +35,7 @@ const clients: Record<string, { kind: ClientKind; name: string; binaries: string
   zcode: { kind: 'cli', name: 'ZCode', binaries: ['zcode'] },
   'chatgpt-desktop': { kind: 'desktop', name: 'ChatGPT / Codex 桌面版', binaries: ['ChatGPT', 'ChatGPT Beta', 'Codex'], packagePattern: 'OpenAI|ChatGPT|Codex' },
   'claude-desktop': { kind: 'desktop', name: 'Claude 桌面版', binaries: ['Claude'], packagePattern: 'Anthropic|Claude' },
-  workbuddy: { kind: 'desktop', name: 'WorkBuddy / CodeBuddy', binaries: ['WorkBuddy', 'CodeBuddy'], packagePattern: 'WorkBuddy|CodeBuddy' },
+  workbuddy: { kind: 'desktop', name: 'WorkBuddy / CodeBuddy', binaries: ['WorkBuddy', 'CodeBuddy', 'CodeBuddy CN'], packagePattern: 'WorkBuddy|CodeBuddy' },
   antigravity: { kind: 'desktop', name: 'Antigravity', binaries: ['Antigravity'], packagePattern: 'Antigravity' },
   deepseek: { kind: 'service', name: 'DeepSeek API', binaries: [] },
 };
@@ -180,6 +180,21 @@ foreach ($package in $packages) {
 $matchingApplications = @($applications | Where-Object { ($candidate -and $_.executable -ieq $candidate) -or ($shortcutAumid -and $_.aumid -eq $shortcutAumid) })
 if ($matchingApplications.Count -gt 1) { @{ unsupported = 'ambiguous-appx' } | ConvertTo-Json -Compress; exit }
 if ($matchingApplications.Count -eq 1) { $matchingApplications[0] | ConvertTo-Json -Compress; exit }
+if ($candidate -and $candidate -ieq $inputData.claudeLauncher) {
+  # Squirrel's stable launcher exits after opening the versioned Claude executable.
+  $launcher = Get-Item -LiteralPath $candidate
+  $version = $launcher.VersionInfo.ProductVersion
+  if ($version -match '^[0-9]+(?:[.][0-9]+){2,3}$') {
+    $directory = Get-Item -LiteralPath (Join-Path $launcher.DirectoryName ('app-' + $version)) -ErrorAction SilentlyContinue
+    if ($directory -and $directory.PSIsContainer -and !(($launcher.Attributes -bor $launcher.Directory.Attributes -bor $directory.Attributes) -band [IO.FileAttributes]::ReparsePoint)) {
+      $main = Get-Item -LiteralPath (Join-Path $directory.FullName 'claude.exe') -ErrorAction SilentlyContinue
+      if ($main -and !$main.PSIsContainer -and !($main.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $main.VersionInfo.ProductVersion -eq $version) {
+        @{ executable = $main.FullName } | ConvertTo-Json -Compress; exit
+      }
+    }
+  }
+  @{ unsupported = 'claude-version' } | ConvertTo-Json -Compress; exit
+}
 if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf) -and [IO.Path]::GetExtension($candidate) -ieq '.exe' -and $candidate -notmatch '\\\\WindowsApps\\\\') {
   @{ executable = $candidate } | ConvertTo-Json -Compress; exit
 }
@@ -263,7 +278,9 @@ export const nativeClientLifecycleRuntime: ClientLifecycleRuntime = {
       const menuSuffix = path.join('Microsoft', 'Windows', 'Start Menu', 'Programs');
       const startMenuRoots = isolated ? [path.join(isolated, 'AppData', 'Roaming', menuSuffix), path.join(isolated, 'ProgramData', menuSuffix)]
         : [path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), menuSuffix), path.join(process.env.ProgramData || 'C:\\ProgramData', menuSuffix)];
-      const found = await script(resolveDesktopScript, { candidate: executable || '', names: definition.binaries.map(name => name + '.exe'), shortcutNames: definition.binaries, packagePattern: definition.packagePattern, fallbacks, startMenuRoots, isolated: !!isolated });
+      const claudeLauncher = agentId === 'claude-desktop' ? path.join(roots[0], 'AnthropicClaude', 'claude.exe') : undefined;
+      const found = await script(resolveDesktopScript, { candidate: executable || '', names: definition.binaries.map(name => name + '.exe'), shortcutNames: definition.binaries, packagePattern: definition.packagePattern, fallbacks, startMenuRoots, claudeLauncher, isolated: !!isolated });
+      if (found.unsupported === 'claude-version') throw new LifecycleError('无法核对 Claude 启动器对应的安装版本，请从开始菜单手动打开');
       if (found.unsupported) throw new LifecycleError(found.unsupported === 'ambiguous-appx' ? '检测到多个商店客户端入口，无法确定重启目标，请从开始菜单手动重新打开' : '客户端快捷方式包含额外启动参数，请从客户端或开始菜单手动重新打开');
       if (found.missing) return null;
       executable = found.executable; aumid = found.aumid;

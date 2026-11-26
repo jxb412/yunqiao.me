@@ -747,6 +747,15 @@ export class GatewayServer {
     } catch {
       throw new Error('上游返回了非 JSON 内容');
     }
+    // Responses clients require an annotations array even when the provider has no citations.
+    if (native && proto === 'openai-responses' && Array.isArray(json?.output)) {
+      for (const item of json.output) {
+        if (item?.type !== 'message' || !Array.isArray(item.content)) continue;
+        for (const part of item.content) {
+          if (part?.type === 'output_text' && !Object.hasOwn(part, 'annotations')) part.annotations = [];
+        }
+      }
+    }
     const irRes = parseUpstreamJson(cand.provider.format, json);
     const out = native ? { ...json, ...(json.model ? { model: ir.model } : {}) } : buildClientJson(proto, irRes, {
       requestId,

@@ -8,6 +8,7 @@ import { persistProviderView, providerBalanceFacts, readProviderView, type Balan
 import { catalogSearchText, sortCatalogEntries } from '../lib/catalogPresentation';
 import '../styles/providers.css';
 import { applyContextDefaults, DEFAULT_CHATGPT_CONTEXT_WINDOW, isChatgptTextModel, isValidContextWindow } from '../../../src/core/modelContext';
+import { providerOrigin } from '../../../src/core/providerBalanceValidation';
 import ContextCompactHint from '../components/ContextCompactHint';
 import { LocalIdentityCard, LocalScanDetails, localTime, useLocalClientScan } from '../components/LocalClients';
 import type { PageProps } from '../App';
@@ -484,6 +485,12 @@ function ProviderEditor({
   onSave: (v: Partial<Provider>) => Promise<void>;
 }) {
   const set = (patch: Partial<Provider>) => onChange({ ...value, ...patch });
+  const [credentialsReset, setCredentialsReset] = useState(false);
+  function setEndpoint(baseUrl: string, patch: Partial<Provider> = {}) {
+    const changed = !!value.baseUrl && providerOrigin(value.baseUrl) !== providerOrigin(baseUrl);
+    if (changed) setCredentialsReset(true);
+    set({ ...patch, baseUrl, ...(changed ? { apiKeys: EMPTY_PROVIDER().apiKeys, headers: undefined, balanceQuery: undefined } : {}) });
+  }
   const [fetching, setFetching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -557,12 +564,10 @@ function ProviderEditor({
 
   function applyPreset(p: Preset) {
     resetContextDrafts(p.models);
-    onChange({
-      ...value,
+    setEndpoint(p.baseUrl, {
       presetId: p.id,
       name: p.nameZh || p.name,
       format: p.format,
-      baseUrl: p.baseUrl,
       color: p.color,
       icon: p.icon,
       models: p.models,
@@ -617,10 +622,11 @@ function ProviderEditor({
         <input
           className="input mono"
           value={value.baseUrl ?? ''}
-          onChange={(e) => set({ baseUrl: e.target.value })}
+          onChange={(e) => setEndpoint(e.target.value)}
           placeholder="https://api.deepseek.com"
         />
       </Field>
+      {credentialsReset && <p className="hint" role="status">供应商地址已更换，请填写新地址的 API Key，并按需重新设置余额查询。</p>}
 
       <div className="grid cols-2">
         <Field label="优先级" hint="数字越大越优先；同名模型会先走高的">

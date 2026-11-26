@@ -32,7 +32,7 @@ window.renderProvider=()=>root.render(<ToastHost key={window.generation}><Provid
 window.state={settings:{autoSyncModels:false},presets:[],providers:[]};
 window.aurora={invoke:async(action,payload)=>{window.calls.push({action,payload:structuredClone(payload)});
 if(action==='provider.balance')return {providerId:payload.providerId,adapter:'auto',items:[]};
-if(action==='provider.save')return structuredClone(window.state.providers[0]);
+if(action==='provider.save')return structuredClone({...window.state.providers[0], ...payload});
 if(action==='provider.models'){if(window.modelError)throw Error(window.modelError);return window.modelResult||{ok:true,added:1};}throw Error('Unexpected RPC '+action);}};}""")
             page.add_script_tag(path=str(bundle))
             for label, key, should_sync in [
@@ -93,6 +93,24 @@ window.state.providers=[{id:'provider-fixture',name:'同步验证',format:'opena
             expect(page.locator('.provider-card').get_by_role('alert')).to_have_count(0)
             expect(page.locator('.toast.ok')).to_have_text('供应商已保存')
             checks.append('Automatic zero-add synchronization is successful and does not create a false error or fabricated additions')
+            for change in ['preset', 'url', 'same-origin']:
+                page.evaluate("""()=>{window.generation++;window.calls=[];window.state.presets=[{id:'new-site',name:'New Site',vendor:'Fixture',region:'global',baseUrl:'https://new.invalid/v1',format:'openai-chat',models:[]}];
+window.state.providers=[{id:'fixture',name:'Old Site',baseUrl:'https://old.invalid/v1',format:'openai-chat',models:[],enabled:true,
+apiKeys:[{id:'old-key',label:'Test',key:'fixture-old',enabled:true,weight:1}],headers:{'X-Private':'fixture-header'},balanceQuery:{adapter:'disabled'}}];window.renderProvider()}""")
+                page.locator('.provider-card').get_by_role('button', name='编辑', exact=True).click()
+                dialog = page.get_by_role('dialog', name='编辑供应商', exact=True)
+                if change == 'preset':
+                    dialog.get_by_title('New Site · Fixture').click()
+                else:
+                    dialog.get_by_placeholder('https://api.deepseek.com').fill('https://old.invalid:443/v2' if change == 'same-origin' else 'https://new.invalid/v1')
+                expect(dialog.get_by_placeholder('sk-...')).to_have_value('fixture-old' if change == 'same-origin' else '')
+                dialog.get_by_role('button', name='保存', exact=True).click()
+                expect(dialog).not_to_be_visible()
+                saved = page.evaluate("window.calls.find(x=>x.action==='provider.save').payload")
+                if change != 'same-origin':
+                    assert not saved.get('headers') and not saved.get('balanceQuery')
+                assert page.evaluate("window.calls.filter(x=>x.action==='provider.models').length") == int(change == 'same-origin')
+            checks.append('Switching preset or origin clears prior credentials before auto-sync; same-origin path changes retain them')
             assert not errors, errors
             browser.close()
             print(json.dumps({'ok': True, 'checks': checks, 'browserErrors': errors}, ensure_ascii=False))

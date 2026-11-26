@@ -315,6 +315,7 @@ function normalize_provider(array $p): array
 {
     $formats = ['openai-chat', 'openai-responses', 'anthropic', 'gemini'];
     $regions = ['cn', 'global', 'local', 'relay', 'subscription'];
+    $color = is_string($p['color'] ?? null) ? trim($p['color']) : '';
     $baseUrl = trim((string)($p['baseUrl'] ?? ''));
     $parts = parse_url($baseUrl);
     if (!(($p['customBaseUrl'] ?? false) === true && $baseUrl === '') && (!$parts || !in_array($parts['scheme'] ?? '', ['http', 'https'], true) || empty($parts['host']) || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment']))) {
@@ -362,7 +363,7 @@ function normalize_provider(array $p): array
         'baseUrl' => $baseUrl,
         'customBaseUrl' => ($p['customBaseUrl'] ?? false) === true,
         'region' => in_array($p['region'] ?? '', $regions, true) ? $p['region'] : 'relay',
-        'color' => (string)($p['color'] ?? '#6d8cff'),
+        'color' => preg_match('/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/iD', $color) ? $color : '#6d8cff',
         'icon' => (string)($p['icon'] ?? '◆'),
         'docs' => $docs,
         'note' => (string)($p['note'] ?? ''),

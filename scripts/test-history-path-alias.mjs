@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { build } from 'esbuild';
@@ -44,8 +45,8 @@ CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id,rollout_ordi
   const context = { home: alias, sqliteHome: alias, blockingProcesses: async () => [] };
 
   await test('canonical files remain valid when checked again through an aliased history root', () => {
-    assert.equal(api.checkedFile(alias, aliasRollout), rollout);
-    assert.equal(api.checkedFile(alias, rollout), rollout);
+    assert.equal(api.checkedFile(alias, aliasRollout), fs.realpathSync.native(rollout));
+    assert.equal(api.checkedFile(alias, rollout), fs.realpathSync.native(rollout));
     assert.equal(api.sameHistoryFile(alias, aliasRollout, rollout), true);
     assert.equal(api.normalizeHistoryContext(context).home, home);
     assert.equal(api.historyLocation(path.join(alias, 'future', 'backup.json')), path.join(home, 'future', 'backup.json'));
@@ -55,6 +56,14 @@ CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id,rollout_ordi
     try { assert.throws(() => api.acquireHistoryLock({ ...context, home, sqliteHome: home }), /正在执行/); }
     finally { unlock(); }
     const next = api.acquireHistoryLock({ ...context, home, sqliteHome: home }); next();
+  });
+  if (process.platform === 'win32') await test('Windows short paths and native long paths identify the same contained rollout', () => {
+    const shortHome = execFileSync('cmd.exe', ['/d', '/u', '/c', 'for %I in ("%HISTORY_FIXTURE_HOME%") do @echo %~sI'], {
+      env: { ...process.env, HISTORY_FIXTURE_HOME: home }, encoding: 'utf16le', windowsHide: true, windowsVerbatimArguments: true,
+    }).trim();
+    const longRollout = fs.realpathSync.native(rollout);
+    assert.equal(api.checkedFile(shortHome, longRollout), longRollout);
+    assert(api.sameHistoryFile(shortHome, path.join(shortHome, path.relative(home, rollout)), longRollout));
   });
   await test('provider repair accepts alias rollout ownership without rewriting its valid stored path', async () => {
     const service = api.createHistoryRepairService(context);

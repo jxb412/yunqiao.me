@@ -73,7 +73,7 @@ function allLogs(dir){if(!fs.existsSync(dir))return[];return fs.readdirSync(dir,
 const mode = process.argv[2] || 'api';
 assert(['api', 'deferred-api'].includes(mode), 'Usage: node scripts/test-native-history-model-context.mjs [api|deferred-api]');
 const deferred=mode.startsWith('deferred'), coexist=mode.includes('coexist'), official=mode==='coexist-official';
-const sourceNames=['src/core/actions.ts','src/core/agentHistory.ts','src/core/historyRepair.ts','src/core/agents/adapters.ts','src/core/agents/historyProviders.ts','src/core/gateway/server.ts','src/core/gateway/router.ts','src/core/gateway/coexist.ts','src/core/gateway/historyRoute.ts','src/core/agents/historyModelCoverage.ts','src/core/agents/modelCatalog.ts'];
+const sourceNames=['src/core/actions.ts','src/core/agentHistory.ts','src/core/historyRepair.ts','src/core/historyRepairIO.ts','src/core/agents/adapters.ts','src/core/agents/historyProviders.ts','src/core/gateway/server.ts','src/core/gateway/router.ts','src/core/gateway/coexist.ts','src/core/gateway/historyRoute.ts','src/core/agents/historyModelCoverage.ts','src/core/agents/modelCatalog.ts'];
 const sourceFingerprints=Object.fromEntries(sourceNames.map(file=>[file,createHash('sha256').update(fs.readFileSync(path.join(workspace,file))).digest('hex')]));
 const report={mode,passed:false,applicationVersion:JSON.parse(fs.readFileSync(path.join(workspace,'package.json'),'utf8')).version,nativeVersion:version.stdout.trim(),desktopResumeAcceptance:'native-persisted-resume-fixed-route',sourceFingerprints};
 const output=process.env.AURORA_NATIVE_REPORT || path.join(workspace, `tmp/native-history-model-context-${mode}.json`);
@@ -132,8 +132,8 @@ try {
  } else {
   assert.equal(connected.history.status,'completed',JSON.stringify(connected.history));assert.equal(afterRows[0].model_provider,target);assert(connected.history.repaired>=1);assert(connected.history.backedUp>=1);assert(connected.history.indexBackedUp>=1);
   const manifest=JSON.parse(fs.readFileSync(path.join(connected.history.backupPath,'manifest.json'),'utf8'));assert.equal(manifest.status,'complete');assert.equal(manifest.targetProvider,target);
-  const raw=manifest.files.find(file=>file.path===rollout);assert(raw&&fs.readFileSync(raw.original).equals(originalLog));
-  const backup=manifest.databases.find(database=>database.path===beforeRows[0].database);assert(backup);
+  const raw=manifest.files.find(file=>fs.realpathSync.native(file.path)===fs.realpathSync.native(rollout));assert(raw&&fs.readFileSync(raw.original).equals(originalLog));
+  const backup=manifest.databases.find(database=>fs.realpathSync.native(database.path)===fs.realpathSync.native(beforeRows[0].database));assert(backup);
   const db=new DatabaseSync(backup.backup,{readOnly:true});try{const row=db.prepare('SELECT model,model_provider FROM threads WHERE id=?').get(id);assert.equal(row.model,'retired-model');assert.equal(row.model_provider,'retired-provider');}finally{db.close();}
  }
  assert.equal(fs.readFileSync(authFile,'utf8'),authText);

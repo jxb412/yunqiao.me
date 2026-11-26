@@ -13,8 +13,8 @@ const check = (label, fn) => { fn(); passed++; console.log(`PASS ${label}`); };
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 try {
   const bundle = path.join(scratch, 'api.cjs');
-  await build({ stdin: { contents: "export * from './src/core/store/index.ts'; export * from './src/core/releaseSources.ts';", resolveDir: workspace, loader: 'ts' }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
-  const { AuroraStore, GITHUB_RELEASE_API } = createRequire(import.meta.url)(bundle);
+  await build({ stdin: { contents: "export * from './src/core/store/index.ts'; export * from './src/core/releaseSources.ts'; export * from './src/main/gatewayPower.ts';", resolveDir: workspace, loader: 'ts' }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
+  const { AuroraStore, GITHUB_RELEASE_API, createGatewayPowerPolicy } = createRequire(import.meta.url)(bundle);
   const fresh = new AuroraStore(path.join(scratch, 'fresh'));
   check('New stores persist the GitHub release API and automatic model sync immediately', () => {
     const settings = fresh.getSettings(), disk = read(path.join(fresh.dir, 'settings.json'));
@@ -25,10 +25,32 @@ try {
   const token = 'fixture-existing-gateway-token', catalog = 'http://127.0.0.1:43001/test-catalog';
   fs.writeFileSync(path.join(legacyDir, 'settings.json'), JSON.stringify({ gatewayToken: token, gatewayPort: 4401, theme: 'dark', updateUrl: 'https://ai.haowucm.cn/pub.php?action=update', autoSyncModels: false, catalogUrl: catalog }));
   const legacy = new AuroraStore(legacyDir); let writes = 0;
+  check('Sharing only requests app-suspension prevention while explicitly enabled and listening on LAN', () => {
+    assert.equal(fresh.getSettings().keepAwakeWhileSharing, false);
+    const starts = [], stops = [];
+    const update = createGatewayPowerPolicy({
+      start(type) { starts.push(type); return starts.length - 1; },
+      stop(id) { stops.push(id); },
+    });
+    const on = { lanShare: true, keepAwakeWhileSharing: true };
+    const lan = { running: true, host: '0.0.0.0' };
+    update({ ...on, keepAwakeWhileSharing: false }, lan);
+    update({ ...on, lanShare: false }, lan);
+    update(on, { ...lan, host: '127.0.0.1' });
+    update(on, { ...lan, running: false });
+    assert.deepEqual(starts, []);
+    update(on, lan); update(on, lan);
+    update({ ...on, keepAwakeWhileSharing: false }, lan);
+    update(on, { running: true, host: '::' });
+    update(on); update(on);
+    assert.deepEqual(starts, ['prevent-app-suspension', 'prevent-app-suspension']);
+    assert.deepEqual(stops, [0, 1]);
+  });
   const save = legacy.settings.write.bind(legacy.settings);
   legacy.settings.write = value => { writes++; save(value); };
   check('Legacy website update settings migrate once without changing tokens or catalog configuration', () => {
     const current = legacy.getSettings(); legacy.getSettings();
+    assert.equal(current.keepAwakeWhileSharing, false);
     assert.equal(current.updateUrl, GITHUB_RELEASE_API); assert.equal(current.autoSyncModels, true); assert.equal(writes, 1);
     assert.equal(current.gatewayToken, token); assert.equal(current.gatewayPort, 4401); assert.equal(current.theme, 'dark'); assert.equal(current.catalogUrl, catalog);
     const reopened = new AuroraStore(legacyDir).getSettings(); assert.equal(reopened.updateUrl, GITHUB_RELEASE_API); assert.equal(reopened.autoSyncModels, true); assert.equal(reopened.gatewayToken, token);
