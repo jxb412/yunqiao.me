@@ -289,6 +289,11 @@ button:disabled { cursor: not-allowed; }
 .member-gift-value { text-align: right; }
 .member-gift-value strong { font-size: 54px; letter-spacing: -3px; display: block; color: var(--accent); }
 .member-gift-value span { font-size: 12px; color: var(--muted); }
+.member-invite { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 16px; }
+.member-invite h3 { font-size: 15px; margin: 0; }
+.member-invite .row { flex-wrap: wrap; }
+.member-invite details { margin-top: 14px; }
+.member-invite summary { cursor: pointer; }
 .member-steps p { display: grid; grid-template-columns: 28px 1fr; column-gap: 12px; margin: 22px 0; }
 .member-steps p span { grid-row: span 2; background: var(--surface-2); border-radius: 50%; width: 28px; height: 28px; display: grid; place-items: center; color: var(--accent); }
 .member-steps p small { color: var(--muted); margin-top: 6px; line-height: 1.6; }

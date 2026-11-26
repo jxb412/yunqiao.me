@@ -1,6 +1,8 @@
 <?php
 /** Installation-bound member sessions and one-time sub2api welcome credit. */
 declare(strict_types=1);
+require_once __DIR__ . '/member_device.php';
+require_once __DIR__ . '/member_invite.php';
 
 final class MemberError extends RuntimeException
 {
@@ -16,6 +18,8 @@ final class MemberError extends RuntimeException
 
 final class MemberService
 {
+    use MemberDeviceProof;
+    use MemberInvitations;
     private const GIFT_POLICY_KEY = 'welcome_gift_policy';
     private const GIFT_AMOUNT_CHECK = "CHECK(typeof(amount_cents)='integer' AND amount_cents BETWEEN 1 AND 1000000)";
     private const CAMPAIGN = 'aurora-first-member-v1';
@@ -221,6 +225,8 @@ final class MemberService
                 } catch (Throwable $error) { $db->exec('ROLLBACK'); throw $error; }
             }
             $this->initializeGiftPolicy($db, $dir);
+            $this->initializeDeviceProof($db);
+            $this->initializeInvitations($db);
             // Migrate authentication metadata only after verifying the complete monetary ledger.
             // Old sessions have no recoverable refresh token and retain their original expiry.
             $columns = array_column($db->query('PRAGMA table_info(member_sessions)')->fetchAll(PDO::FETCH_ASSOC), 'name');
@@ -439,6 +445,8 @@ final class MemberService
 
     private function requestStage(string $method, string $path): string
     {
+        if ($path === '/admin/redeem-codes/generate') return '获取注册邀请码';
+        if (preg_match('#^/admin/redeem-codes/[0-9]+$#D', $path)) return '核对注册邀请码';
         if ($path === '/admin/redeem-codes/create-and-redeem') return '发放赠金';
         if (str_starts_with($path, '/admin/redeem-codes?')) return '核对赠金凭据';
         if ($path === '/keys' && $method === 'POST') return '创建客户端密钥';
@@ -482,8 +490,14 @@ final class MemberService
             // Only known reason constants affect classification; upstream text, URLs and metadata never leave the server.
             $reason = is_array($payload) ? ($payload['reason'] ?? $payload['code'] ?? null) : null;
             $admin = str_starts_with($path, '/admin/');
+            if ($path === '/admin/redeem-codes/generate'
+                && (($status === 401 && in_array($reason, ['INVALID_ADMIN_KEY', 'UNAUTHORIZED'], true))
+                    || ($status === 403 && $reason === 'FORBIDDEN')
+                    || ($status === 423 && $reason === 'ADMIN_COMPLIANCE_ACK_REQUIRED'))) {
+                throw new MemberError('INVITE_UPSTREAM_DENIED', '平台拒绝了邀请码管理请求，请联系管理员检查权限后再试', 503);
+            }
             if ($admin && in_array($status, [401, 403], true)) throw new MemberError('UPSTREAM_ADMIN_AUTH_REJECTED', $stage . '失败：平台管理凭据无效或权限不足，请联系平台管理员', 503);
-            if ($admin && $status === 423 && $reason === 'ADMIN_COMPLIANCE_ACK_REQUIRED') throw new MemberError('UPSTREAM_ADMIN_ACTION_REQUIRED', '平台管理功能尚待管理员确认，赠金暂未处理，请联系平台管理员', 503);
+            if ($admin && $status === 423 && $reason === 'ADMIN_COMPLIANCE_ACK_REQUIRED') throw new MemberError('UPSTREAM_ADMIN_ACTION_REQUIRED', $stage . '需要平台管理员确认管理权限', 503);
             if ($path === '/keys' && $method === 'POST' && $status >= 400 && $status < 500) {
                 if ($reason === 'GROUP_NOT_ALLOWED') throw new MemberError('GROUP_NOT_ALLOWED', '当前会员已无权使用此分组，请刷新分组后重新选择', 403);
                 if ($reason === 'API_KEY_COUNT_EXCEEDED') throw new MemberError('KEY_LIMIT_REACHED', '会员账户的 API Key 数量已达上限，请在会员网站删除不用的密钥后重试', 409);
@@ -843,6 +857,8 @@ final class MemberService
         foreach (['userId', 'user_id', 'amount', 'amountUsd', 'amountCents', 'giftUsd', 'giftEnabled', 'giftMessage', 'giftPolicyRevision', 'campaign', 'value', 'code', 'adminKey', 'origin'] as $forbidden) {
             if (array_key_exists($forbidden, $body)) throw new MemberError('INVALID_FIELDS', '请求包含不允许的会员字段');
         }
+        if ($action === 'device-challenge') return $this->deviceChallenge($body, $credentials, $remoteAddress);
+        if ($action === 'invite') return $this->deviceInvitation($this->verifyDeviceProof('invite', $body, $credentials));
         if (in_array($action, ['login', 'login2fa', 'bind'], true)) {
             $this->rateLimit('login', $remoteAddress, 12, 300);
             if ($action === 'bind') return $this->createSession((string)($body['accessToken'] ?? ''), $credentials);
@@ -882,6 +898,7 @@ final class MemberService
             return ['ok' => true];
         }
         if (!in_array($action, ['status', 'groups', 'create-client-key', 'claim'], true)) throw new MemberError('UNKNOWN_ACTION', '会员操作不存在', 404);
+        $deviceHash = $action === 'claim' ? $this->verifyDeviceProof('claim', $body, $credentials) : null;
         $session = $this->authenticatedSession($session);
         $profile = $session['verified_profile'];
         if ($action === 'status') {
@@ -890,9 +907,12 @@ final class MemberService
         if ($action === 'groups') return ['ok' => true, 'groups' => $this->availableGroups($this->unseal($session['upstream_token']))];
         if ($action === 'create-client-key') return $this->createClientKey($session, $body);
         $this->rateLimit('claim', (string)$userId, 20, 60);
-        $grant = $this->transaction(function () use ($userId, $installation): array {
+        $grant = $this->transaction(function () use ($userId, $installation, $deviceHash): array {
             $existing = $this->execute('SELECT * FROM welcome_grants WHERE user_id=?', [$userId])->fetch(PDO::FETCH_ASSOC);
-            if ($existing) return $existing;
+            if ($existing) {
+                if ($installation === $existing['installation_hash']) $this->reserveDeviceGift($deviceHash, $userId);
+                return $existing;
+            }
             if ($this->execute('SELECT 1 FROM welcome_grants WHERE installation_hash=?', [$installation])->fetchColumn()) {
                 throw new MemberError('INSTALLATION_ALREADY_CLAIMED', '此安装已领取过首次使用赠金', 409);
             }
@@ -903,6 +923,7 @@ final class MemberService
             // Stable across every retry and process crash; committed before any external side effect.
             $code = $this->welcomeCode($userId);
             $this->execute('INSERT INTO welcome_grants(user_id,installation_hash,code,status,amount_cents,created_at) VALUES(?,?,?,\'pending\',?,?)', [$userId, $installation, $code, $policy['amountCents'], time()]);
+            $this->reserveDeviceGift($deviceHash, $userId);
             return $this->execute('SELECT * FROM welcome_grants WHERE user_id=?', [$userId])->fetch(PDO::FETCH_ASSOC);
         });
         if ($grant['status'] !== 'claimed') {

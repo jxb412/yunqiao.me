@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomBytes, createCipheriv, createDecipheriv, createHash, createPublicKey, verify } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { build } from 'esbuild';
 
@@ -44,6 +44,7 @@ function fixture(label) {
     { id: 12, name: 'Unknown', platform: 'future', supported: false },
   ];
   const formats = { openai: 'openai-responses', anthropic: 'anthropic', gemini: 'gemini', deepseek: 'openai-chat', grok: 'openai-chat' };
+  const challenges = new Map();
   globalThis.fetch = async (url, options) => {
     const parsed = new URL(url);
     assert.equal(parsed.origin, 'https://ai.haowucm.cn'); assert.equal(parsed.pathname, '/member.php'); assert.equal(options.redirect, 'error');
@@ -57,7 +58,26 @@ function fixture(label) {
       if (body.password === 'two-factor') return respond({ ok: true, requires2fa: true, tempToken: 'challenge-token', emailMasked: 'u***@test.invalid' });
       return respond({ ok: true, sessionToken: String(control.activeUser).repeat(64), accessToken: 'upstream-access-must-stay-private', refreshToken: 'upstream-refresh-must-stay-private', access_token: 'upstream-access-alias-private', refresh_token: 'upstream-refresh-alias-private', canRefresh: action !== 'bind', expiresAt: new Date(Date.now() + 3600000).toISOString(), member: { id: control.activeUser, email: 'u@test.invalid', balance: 0 }, gift: currentGift() });
     }
-    assert.equal(options.headers.authorization, 'Bearer ' + String(control.activeUser).repeat(64));
+    const invite = action === 'invite' || (action === 'device-challenge' && body.purpose === 'invite');
+    const token = invite ? '' : String(control.activeUser).repeat(64);
+    assert.equal(options.headers.authorization, invite ? undefined : 'Bearer ' + token);
+    if (action === 'device-challenge') {
+      assert.deepEqual(Object.keys(body).sort(), ['deviceId', 'publicKey', 'purpose']);
+      if (control.deviceDenied) return respond({ ok: false, code: 'DEVICE_APPROVAL_REQUIRED', error: '请先核准本机设备凭据。' }, 403);
+      const challenge = randomBytes(32).toString('hex');
+      challenges.set(challenge, { ...body, token, installationId: options.headers['X-Aurora-Installation'] });
+      return respond({ ok: true, challenge: control.badChallenge ? 'invalid' : challenge, expiresAt: Math.floor(Date.now()/1000) + 90 });
+    }
+    if (action === 'claim' || invite) {
+      assertProofFields(body);
+      const saved = challenges.get(body.challenge);
+      assert(saved && saved.deviceId === body.deviceId && saved.publicKey === body.publicKey && saved.token === token && saved.purpose === action);
+      assert.equal(saved.installationId, options.headers['X-Aurora-Installation']);
+      const canonical = ['yunqiao-member-device-v1', action, body.deviceId, saved.installationId, createHash('sha256').update(token).digest('hex'), body.challenge].join('\n');
+      assert(verify('sha256', Buffer.from(canonical), createPublicKey({ key: Buffer.from(body.publicKey, 'base64'), format: 'der', type: 'spki' }), Buffer.from(body.signature, 'base64')));
+      challenges.delete(body.challenge);
+      if (invite) return respond({ ok: true, inviteCode: 'fixture-registration-code', ignored: { private: 'irrelevant-response-field' } });
+    }
     if (action === 'status') return respond({ ok: true, member: { id: control.activeUser, balance: control.giftRecord?.status === 'claimed' ? control.giftRecord.amountUsd : 0 }, gift: currentGift() });
     if (action === 'groups') return respond({ ok: true, groups });
     if (action === 'claim') {
@@ -79,6 +99,10 @@ function fixture(label) {
   return { api, store, control, directory, safeStorage, groups };
 }
 async function test(label, run) { await run(); passed++; console.log(`PASS ${label}`); }
+function assertProofFields(body) {
+  assert.deepEqual(Object.keys(body).sort(), ['challenge', 'deviceId', 'publicKey', 'signature']);
+  assert.match(body.deviceId, /^[a-f0-9]{64}$/); assert.match(body.challenge, /^[a-f0-9]{64}$/);
+}
 const login = async f => f.api.memberAction(f.store, 'member.login', { email: ' user@test.invalid ', password: 'login-password-private' });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, message) {
@@ -120,6 +144,49 @@ try {
     await assert.rejects(() => login(f), /安全存储/); assert.equal(f.control.requests.length, 1);
     assert(!fs.existsSync(path.join(f.directory, 'member-installation.enc')));
   });
+  await test('public device fingerprints survive restarts; only an explicit benefit operation requests a signed challenge', async () => {
+    const f = fixture('device-info');
+    await f.api.memberAction(f.store, 'member.status', {});
+    const keyFile = path.join(f.directory, 'member-device-key.enc');
+    assert(!fs.existsSync(keyFile));
+    const info = await f.api.memberAction(f.store, 'member.deviceInfo', { deviceId: 'forged' });
+    assert.deepEqual(Object.keys(info).sort(), ['deviceId', 'keyId', 'ok']); assert.match(info.deviceId, /^[a-f0-9]{64}$/);
+    assert.match(info.keyId, /^[a-f0-9]{64}$/); assert.deepEqual(f.control.requests.map(r => r.action), ['config']);
+    f.api = freshApi();
+    assert.deepEqual(await f.api.memberAction(f.store, 'member.deviceInfo', {}), info);
+    const sealed = fs.readFileSync(keyFile), privateText = f.safeStorage.decryptString(sealed);
+    assert.match(privateText, /BEGIN PRIVATE KEY/); assert(!sealed.includes(Buffer.from(privateText)));
+    const result = await f.api.memberAction(f.store, 'member.invite', { challenge: 'ignored', deviceId: 'forged', signature: 'ignored' });
+    assert.deepEqual(result, { ok: true, inviteCode: 'fixture-registration-code' });
+    const sent = f.control.requests.at(-1);
+    assert.equal(sent.body.deviceId, info.deviceId);
+    assert.equal(createHash('sha256').update(Buffer.from(sent.body.publicKey, 'base64')).digest('hex'), info.keyId);
+    assert(!JSON.stringify(f.control.requests).includes(privateText)); assert(!JSON.stringify(f.store.exportAll()).includes(privateText));
+    await login(f);
+    assert.deepEqual(await f.api.memberAction(f.store, 'member.invite', {}), result);
+    assert.notEqual(f.control.requests.at(-1).body.challenge, sent.body.challenge);
+    assert(f.control.requests.slice(-2).every(r => r.headers.authorization === undefined));
+    const otherUser = fixture('device-other-user');
+    const other = await otherUser.api.memberAction(otherUser.store, 'member.deviceInfo', {});
+    assert.equal(other.deviceId, info.deviceId); assert.notEqual(other.keyId, info.keyId);
+  });
+  await test('missing approval, invalid challenge or damaged key never falls back to an unprotected request', async () => {
+    const f = fixture('device-denied'); await login(f);
+    f.control.deviceDenied = true;
+    for (const action of ['member.invite', 'member.claim']) {
+      const result = await f.api.memberAction(f.store, action, {});
+      assert.equal(result.code, 'DEVICE_APPROVAL_REQUIRED'); assert(!result.ok);
+      assert.equal(f.control.requests.at(-1).action, 'device-challenge');
+    }
+    f.control.deviceDenied = false; f.control.badChallenge = true;
+    await assert.rejects(() => f.api.memberAction(f.store, 'member.invite', {}), /设备验证请求无效/);
+    assert(!f.control.requests.some(r => ['claim', 'invite'].includes(r.action)));
+    assert((await f.api.memberAction(f.store, 'member.status', {})).loggedIn);
+    const keyFile = path.join(f.directory, 'member-device-key.enc');
+    fs.writeFileSync(keyFile, 'broken');
+    await assert.rejects(() => f.api.memberAction(f.store, 'member.invite', {}), /无法解密设备/);
+    assert.equal(fs.readFileSync(keyFile, 'utf8'), 'broken');
+  });
   await test('claim authority fields are discarded before fixed server request', async () => {
     const f = fixture('claim'); await login(f);
     const identity = f.control.requests.at(-1).headers;
@@ -129,7 +196,7 @@ try {
       headers: { authorization: 'Bearer forged-session', 'X-Aurora-Installation': 'forged-installation', 'X-Aurora-Installation-Proof': 'forged-proof' },
     });
     const request = f.control.requests.at(-1);
-    assert.equal(request.action, 'claim'); assert.equal(request.method, 'POST'); assert.deepEqual(request.body, {});
+    assert.equal(request.action, 'claim'); assert.equal(request.method, 'POST'); assertProofFields(request.body);
     assert.equal(request.headers.authorization, 'Bearer ' + '1'.repeat(64));
     for (const key of ['X-Aurora-Installation', 'X-Aurora-Installation-Proof']) assert.equal(request.headers[key], identity[key]);
     assert.equal(result.member.id, 1); assert.equal(result.gift.amountUsd, 5); assert(!JSON.stringify(result).includes('forged'));
@@ -161,7 +228,7 @@ try {
     assert(added.ok); assert.equal(f.store.getProvider(added.providerId).format, 'openai-responses');
     const before = fs.readFileSync(path.join(f.directory, 'member-session.enc'));
     await assert.rejects(() => f.api.memberAction(f.store, 'member.claim', { giftEnabled: true, amountUsd: 500 }), /新客活动暂未开放/);
-    assert.deepEqual(f.control.requests.at(-1).body, {}); assert.equal(f.control.giftRecord, null);
+    assertProofFields(f.control.requests.at(-1).body); assert.equal(f.control.giftRecord, null);
     assert.deepEqual(fs.readFileSync(path.join(f.directory, 'member-session.enc')), before);
     assert((await f.api.memberAction(f.store, 'member.status', {})).loggedIn);
   });
@@ -174,7 +241,7 @@ try {
     assert.equal(pending.gift.status, 'pending'); assert.equal(pending.gift.amountUsd, 10);
     const confirmed = await f.api.memberAction(f.store, 'member.claim', { amountUsd: 20, giftPolicyRevision: 'closed-new-policy' });
     assert.equal(confirmed.gift.status, 'claimed'); assert.equal(confirmed.gift.amountUsd, 10); assert.equal(confirmed.member.balance, 10);
-    assert.deepEqual(f.control.requests.at(-1).body, {});
+    assertProofFields(f.control.requests.at(-1).body);
     f.control.campaign.giftUsd = 25.5;
     const refreshed = await f.api.memberAction(f.store, 'member.status', {});
     assert.equal(refreshed.config.giftUsd, 25.5); assert.equal(refreshed.gift.amountUsd, 10); assert.equal(refreshed.gift.status, 'claimed');
@@ -245,7 +312,7 @@ try {
     f.control.expired = ''; await login(f); f.control.ambiguousClaim = true;
     const before = f.control.requests.length;
     await assert.rejects(() => f.api.memberAction(f.store, 'member.claim', {}), /response lost/);
-    assert.deepEqual(f.control.requests.slice(before).map(r => r.action), ['claim']);
+    assert.deepEqual(f.control.requests.slice(before).map(r => r.action), ['device-challenge', 'claim']);
     assert(fs.existsSync(path.join(f.directory, 'member-session.enc')));
   });
   await test('late status responses cannot clear a newer login or expose the prior account', async () => {

@@ -2,6 +2,7 @@
 /** Offline integration tests. PHP 8.1+, pdo_sqlite, openssl; no real accounts or credits. */
 declare(strict_types=1);
 require __DIR__ . '/../server/member_service.php';
+require_once __DIR__ . '/test-member-device-fixture.php';
 
 function fixture(string $directory, string $mode = '', ?callable $intercept = null): MemberService
 {
@@ -124,7 +125,7 @@ function runClaimWorkers(string $directory, array $credentials): void
 if (($argv[1] ?? '') === '--worker') {
     $directory = $argv[2];
     $credentials = json_decode((string)file_get_contents($argv[3]), true, 32, JSON_THROW_ON_ERROR);
-    try { echo json_encode(fixture($directory)->handle('claim', [], $credentials), JSON_THROW_ON_ERROR); }
+    try { echo json_encode(memberDeviceTestClaim(fixture($directory), $credentials), JSON_THROW_ON_ERROR); }
     catch (Throwable $e) { fwrite(STDERR, get_class($e) . ': ' . $e->getMessage()); exit(1); }
     exit;
 }
@@ -143,7 +144,7 @@ $test = static function (string $name, callable $run) use (&$tests, $root): void
 
 $test('fixed ten-dollar grant, repeated claim and private response', static function ($dir): void {
     $service = fixture($dir); $credentials = signedIn($service, 1, 1);
-    $first = $service->handle('claim', [], $credentials); $second = $service->handle('claim', [], $credentials);
+    $first = memberDeviceTestClaim($service, $credentials); $second = memberDeviceTestClaim($service, $credentials);
     check($first['gift']['status'] === 'claimed' && $first['gift']['amountUsd'] === 10 && $first['member']['balance'] === 10.0, 'credit confirmed');
     check($first['gift']['code'] === $second['gift']['code'], 'stable code');
     check(strlen($first['gift']['code']) === 32 && str_starts_with($first['gift']['code'], 'YQW-'), 'redeem code respects actual storage limit');
@@ -155,21 +156,21 @@ $test('unknown account balances are never presented as measured zero', static fu
     foreach (['missing-balance', 'invalid-balance'] as $mode) {
         $service = fixture($dir, $mode); $credentials = signedIn($service, 1, 1);
         check($service->handle('status', [], $credentials)['member']['balance'] === null, 'unknown balance remains unknown');
-        check($service->handle('claim', [], $credentials)['member']['balance'] === null, 'confirmed gift does not invent a new account balance');
+        check(memberDeviceTestClaim($service, $credentials)['member']['balance'] === null, 'confirmed gift does not invent a new account balance');
     }
     $service = fixture($dir); $credentials = signedIn($service, 2, 2);
     check($service->handle('status', [], $credentials)['member']['balance'] === 0.0, 'reported zero balance remains zero');
 });
 $test('same account on another installation cannot receive twice', static function ($dir): void {
-    $service = fixture($dir); $service->handle('claim', [], signedIn($service, 1, 1));
-    $result = $service->handle('claim', [], signedIn($service, 1, 2));
+    $service = fixture($dir); memberDeviceTestClaim($service, signedIn($service, 1, 1));
+    $result = memberDeviceTestClaim($service, signedIn($service, 1, 2));
     check($result['gift']['status'] === 'claimed' && (int)upstreamDb($dir)->query('SELECT COUNT(*) FROM codes')->fetchColumn() === 1, 'account unique');
 });
 $test('another account on same installation is ineligible', static function ($dir): void {
-    $service = fixture($dir); $service->handle('claim', [], signedIn($service, 1, 1));
+    $service = fixture($dir); memberDeviceTestClaim($service, signedIn($service, 1, 1));
     $other = signedIn($service, 2, 1);
     check($service->handle('status', [], $other)['gift']['status'] === 'ineligible', 'installation status');
-    expectCode(fn() => $service->handle('claim', [], $other), 'INSTALLATION_ALREADY_CLAIMED');
+    expectCode(fn() => memberDeviceTestClaim($service, $other), 'INSTALLATION_ALREADY_CLAIMED');
 });
 $test('self-reported identity and amount rejected', static function ($dir): void {
     $service = fixture($dir); $credentials = signedIn($service, 1, 1);
@@ -179,16 +180,16 @@ $test('self-reported identity and amount rejected', static function ($dir): void
 $test('installation and bearer authentication enforced', static function ($dir): void {
     $service = fixture($dir); $credentials = signedIn($service, 1, 1);
     $bad = $credentials; $bad['installationProof'] = str_repeat('0', 64);
-    expectCode(fn() => $service->handle('claim', [], $bad), 'INSTALLATION_MISMATCH');
+    expectCode(fn() => memberDeviceTestClaim($service, $bad), 'INSTALLATION_MISMATCH');
     $other = signedIn($service, 2, 2); $other['sessionToken'] = $credentials['sessionToken'];
-    expectCode(fn() => $service->handle('claim', [], $other), 'SESSION_EXPIRED');
+    expectCode(fn() => memberDeviceTestClaim($service, $other), 'SESSION_EXPIRED');
     expectCode(fn() => $service->handle('bind', ['accessToken' => 'forged'], identity(3)), 'AUTH_REJECTED');
 });
 $test('timeout after upstream credit recovers by code lookup', static function ($dir): void {
     $service = fixture($dir, 'timeout-after-credit'); $credentials = signedIn($service, 1, 1);
-    expectCode(fn() => $service->handle('claim', [], $credentials), 'UPSTREAM_UNAVAILABLE');
+    expectCode(fn() => memberDeviceTestClaim($service, $credentials), 'UPSTREAM_UNAVAILABLE');
     check(db($dir)->query('SELECT status FROM welcome_grants')->fetchColumn() === 'pending', 'pending durable');
-    $result = fixture($dir)->handle('claim', [], $credentials);
+    $result = memberDeviceTestClaim(fixture($dir), $credentials);
     check($result['gift']['status'] === 'claimed' && (int)upstreamDb($dir)->query("SELECT value FROM counters WHERE key='fulfill'")->fetchColumn() === 1, 'read-only reconciliation');
 });
 $test('legacy pending code migrates only after a complete empty lookup', static function ($dir): void {
@@ -196,7 +197,7 @@ $test('legacy pending code migrates only after a complete empty lookup', static 
     $before = db($dir)->query('SELECT * FROM welcome_grants')->fetch(PDO::FETCH_ASSOC);
     expectCode(fn() => $service->adminReconcile(1, false), 'GRANT_PENDING');
     check(db($dir)->query('SELECT code FROM welcome_grants')->fetchColumn() === $oldCode, 'read-only reconciliation does not migrate');
-    $result = $service->handle('claim', [], $credentials);
+    $result = memberDeviceTestClaim($service, $credentials);
     $after = db($dir)->query('SELECT * FROM welcome_grants')->fetch(PDO::FETCH_ASSOC);
     check($result['gift']['status'] === 'claimed' && strlen($after['code']) === 32 && $after['code'] !== $oldCode, 'legacy code replaced and fulfilled');
     foreach (['user_id', 'installation_hash', 'amount_cents', 'created_at'] as $field) check($before[$field] === $after[$field], 'migration preserves entitlement ' . $field);
@@ -205,12 +206,12 @@ $test('legacy pending code migrates only after a complete empty lookup', static 
 $test('legacy used receipt reconciles without replacing the code or crediting again', static function ($dir): void {
     $service = fixture($dir); $credentials = signedIn($service, 1, 1); $oldCode = seedLegacyGrant($dir);
     $q = upstreamDb($dir)->prepare('INSERT INTO codes(code,user_id,cents) VALUES(?,1,1000)'); $q->execute([$oldCode]);
-    $result = $service->handle('claim', [], $credentials);
+    $result = memberDeviceTestClaim($service, $credentials);
     check($result['gift']['status'] === 'claimed' && $result['gift']['code'] === $oldCode, 'original used receipt retained');
     check((int)upstreamDb($dir)->query('SELECT COUNT(*) FROM counters')->fetchColumn() === 0, 'no fulfillment request');
     $other = signedIn($service, 2, 2); $mismatched = seedLegacyGrant($dir, 2);
     $q = upstreamDb($dir)->prepare('INSERT INTO codes(code,user_id,cents) VALUES(?,3,1000)'); $q->execute([$mismatched]);
-    expectCode(fn() => $service->handle('claim', [], $other), 'GRANT_REVIEW_REQUIRED');
+    expectCode(fn() => memberDeviceTestClaim($service, $other), 'GRANT_REVIEW_REQUIRED');
     check(db($dir)->query('SELECT code FROM welcome_grants WHERE user_id=2')->fetchColumn() === $mismatched, 'mismatched used receipt never replaced');
 });
 $test('legacy unused receipt stays reserved for review and is never replaced', static function ($dir): void {
@@ -220,7 +221,7 @@ $test('legacy unused receipt stays reserved for review and is never replaced', s
         if (str_starts_with($path, '/admin/redeem-codes?')) return ['status' => 200, 'body' => ['code' => 0, 'data' => ['total' => 1, 'items' => [['id' => 10, 'code' => $oldCode, 'type' => 'balance', 'value' => 10, 'status' => 'unused']]]]];
         return null;
     });
-    expectCode(fn() => $service->handle('claim', [], $credentials), 'GRANT_REVIEW_REQUIRED');
+    expectCode(fn() => memberDeviceTestClaim($service, $credentials), 'GRANT_REVIEW_REQUIRED');
     check(db($dir)->query('SELECT code FROM welcome_grants')->fetchColumn() === $oldCode && db($dir)->query('SELECT status FROM welcome_grants')->fetchColumn() === 'review', 'unused reservation retained');
     check($posts === 0, 'no new code or redemption request');
 });
@@ -229,8 +230,8 @@ $test('claimed, review and unrecognized long codes cannot enter automatic migrat
     foreach (['claimed', 'review', 'pending'] as $index => $status) {
         $userId = $index + 1; $credentials = signedIn($service, $userId, $userId); $oldCode = seedLegacyGrant($dir, $userId, $status);
         if ($status === 'pending') { $oldCode = 'YQ-WELCOME-' . str_repeat('0', 64); $q = db($dir)->prepare('UPDATE welcome_grants SET code=? WHERE user_id=?'); $q->execute([$oldCode, $userId]); }
-        if ($status === 'claimed') check($service->handle('claim', [], $credentials)['gift']['status'] === 'claimed', 'claimed stays claimed');
-        else expectCode(fn() => $service->handle('claim', [], $credentials), 'GRANT_REVIEW_REQUIRED');
+        if ($status === 'claimed') check(memberDeviceTestClaim($service, $credentials)['gift']['status'] === 'claimed', 'claimed stays claimed');
+        else expectCode(fn() => memberDeviceTestClaim($service, $credentials), 'GRANT_REVIEW_REQUIRED');
         check(db($dir)->query('SELECT code FROM welcome_grants WHERE user_id=' . $userId)->fetchColumn() === $oldCode, 'original code remains reserved');
     }
     check((int)upstreamDb($dir)->query('SELECT COUNT(*) FROM codes')->fetchColumn() === 0, 'no new credits');
@@ -242,7 +243,7 @@ $test('incomplete legacy searches never establish absence', static function ($di
             if (str_starts_with($path, '/admin/redeem-codes?')) return ['status' => 200, 'body' => ['code' => 0, 'data' => $found]];
             return null;
         });
-        expectCode(fn() => $service->handle('claim', [], $credentials), 'GRANT_LOOKUP_INCOMPLETE');
+        expectCode(fn() => memberDeviceTestClaim($service, $credentials), 'GRANT_LOOKUP_INCOMPLETE');
         check(db($dir)->query('SELECT code FROM welcome_grants')->fetchColumn() === $oldCode && db($dir)->query('SELECT status FROM welcome_grants')->fetchColumn() === 'pending', 'reservation unchanged');
     }
 });
@@ -250,12 +251,12 @@ $test('a delayed legacy lookup reloads a concurrently migrated and claimed grant
     $base = fixture($dir); $credentials = signedIn($base, 1, 1); $oldCode = seedLegacyGrant($dir); $delayed = false;
     $service = fixture($dir, '', static function ($method, $path) use ($dir, $credentials, $oldCode, &$delayed) {
         if (!$delayed && str_contains($path, rawurlencode($oldCode))) {
-            $delayed = true; fixture($dir)->handle('claim', [], $credentials);
+            $delayed = true; memberDeviceTestClaim(fixture($dir), $credentials);
             return ['status' => 200, 'body' => ['code' => 0, 'data' => ['total' => 0, 'items' => []]]];
         }
         return null;
     });
-    check($service->handle('claim', [], $credentials)['gift']['status'] === 'claimed', 'latest result returned');
+    check(memberDeviceTestClaim($service, $credentials)['gift']['status'] === 'claimed', 'latest result returned');
     check((int)upstreamDb($dir)->query("SELECT value FROM counters WHERE key='fulfill'")->fetchColumn() === 1, 'late worker never fulfills stale code');
 });
 $test('concurrent legacy migrations preserve one grant and credit exactly once', static function ($dir): void {
@@ -265,24 +266,24 @@ $test('concurrent legacy migrations preserve one grant and credit exactly once',
 });
 $test('mismatched receipt requires review, admin read-only reconcile', static function ($dir): void {
     $service = fixture($dir, 'wrong-receipt'); $credentials = signedIn($service, 1, 1);
-    expectCode(fn() => $service->handle('claim', [], $credentials), 'GRANT_REVIEW_REQUIRED');
+    expectCode(fn() => memberDeviceTestClaim($service, $credentials), 'GRANT_REVIEW_REQUIRED');
     check(db($dir)->query('SELECT status FROM welcome_grants')->fetchColumn() === 'review', 'fail closed');
-    expectCode(fn() => fixture($dir)->handle('claim', [], $credentials), 'GRANT_REVIEW_REQUIRED');
+    expectCode(fn() => memberDeviceTestClaim(fixture($dir), $credentials), 'GRANT_REVIEW_REQUIRED');
     check(fixture($dir)->adminReconcile(1, false)['gift']['status'] === 'claimed', 'admin confirms actual upstream receipt');
 });
 $test('upstream identity and active status revalidated before credit', static function ($dir): void {
     $credentials = signedIn(fixture($dir), 1, 1);
-    expectCode(fn() => fixture($dir, 'different-user')->handle('claim', [], $credentials), 'AUTH_REJECTED');
+    expectCode(fn() => memberDeviceTestClaim(fixture($dir, 'different-user'), $credentials), 'AUTH_REJECTED');
     expectCode(fn() => fixture($dir)->handle('status', [], $credentials), 'SESSION_EXPIRED');
     $credentials = signedIn(fixture($dir), 1, 1);
-    expectCode(fn() => fixture($dir, 'inactive')->handle('claim', [], $credentials), 'ACCOUNT_INACTIVE');
+    expectCode(fn() => memberDeviceTestClaim(fixture($dir, 'inactive'), $credentials), 'ACCOUNT_INACTIVE');
 });
 $test('session token is hashed, upstream JWT encrypted, logout revokes', static function ($dir): void {
     $service = fixture($dir); $credentials = signedIn($service, 1, 1);
     $session = db($dir)->query('SELECT * FROM member_sessions')->fetch(PDO::FETCH_ASSOC);
     check($session['token_hash'] !== $credentials['sessionToken'] && !str_contains($session['upstream_token'], 'user-1'), 'encrypted at rest');
     $service->handle('logout', [], $credentials);
-    expectCode(fn() => $service->handle('claim', [], $credentials), 'SESSION_EXPIRED');
+    expectCode(fn() => memberDeviceTestClaim($service, $credentials), 'SESSION_EXPIRED');
 });
 $test('login and two-factor flow', static function ($dir): void {
     $service = fixture($dir);
@@ -334,7 +335,7 @@ $test('gift diagnostics distinguish admin credentials, route support and upstrea
             if ($method === $failureMethod && str_starts_with($path, '/admin/redeem-codes')) return ['status' => $status, 'body' => ['code' => $method === 'GET' ? $reason : $status, 'reason' => $reason, 'message' => 'fixture-private-admin-key', 'metadata' => ['request' => 'fixture-private-body']]];
             return null;
         });
-        try { $service->handle('claim', [], $credentials); throw new RuntimeException('expected gift failure'); }
+        try { memberDeviceTestClaim($service, $credentials); throw new RuntimeException('expected gift failure'); }
         catch (MemberError $error) { check($error->errorCode === $expected && str_contains($error->getMessage(), $message), 'precise gift stage'); check(!str_contains($error->getMessage(), 'fixture-private'), 'gift error redacted'); }
         check(db($dir)->query('SELECT status FROM welcome_grants')->fetchColumn() === 'pending', 'unconfirmed grant remains pending');
         check(db($dir)->query('SELECT last_error FROM welcome_grants')->fetchColumn() === $expected, 'safe diagnostic code retained');
@@ -364,7 +365,7 @@ $test('corrupt monetary ledger is not silently reset', static function ($dir): v
 
 $test('initialized empty or incomplete ledgers never rebuild grant history', static function ($dir): void {
     $service = fixture($dir); $credentials = signedIn($service, 1, 1);
-    $service->handle('claim', [], $credentials); unset($service);
+    memberDeviceTestClaim($service, $credentials); unset($service);
     $database = db($dir); $database->exec('PRAGMA wal_checkpoint(TRUNCATE)'); unset($database);
     file_put_contents($dir . '/ledger/members.sqlite', '');
     expectCode(fn() => signedIn(fixture($dir), 1, 2), 'STORAGE_UNAVAILABLE');

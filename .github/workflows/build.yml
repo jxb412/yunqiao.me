@@ -33,6 +33,8 @@ jobs:
       - run: php scripts/test-members.php
       - run: php scripts/test-member-renewal.php
       - run: php scripts/test-member-gift-policy.php
+      - run: php scripts/test-member-invites.php
+      - run: php scripts/test-member-device.php
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

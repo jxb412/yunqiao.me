@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { AuroraStore } from '../core/store/index.js';
+import { hasProtectedMemberStorage as protectedStorage, memberDeviceIdentity } from './memberDevice.js';
 
 const endpoint = 'https://ai.haowucm.cn/member.php';
 let sessionToken = '';
@@ -17,6 +18,9 @@ class MemberSessionExpired extends Error {
 }
 class MemberSessionChanged extends Error {
   constructor() { super('会员登录状态已变化，请重新读取当前账号信息。'); }
+}
+class MemberDeviceError extends Error {
+  constructor(readonly code: string, message: string) { super(message); }
 }
 
 function installation(allowCreate = true) {
@@ -45,7 +49,6 @@ function installation(allowCreate = true) {
   installationIdentity = record;
   return record;
 }
-function protectedStorage() { return safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'); }
 function sessionFile() { return path.join(app.getPath('userData'), 'member-session.enc'); }
 function restoreSession() {
   if (restored) return;
@@ -71,14 +74,15 @@ function saveSession(token: string) {
 type BackgroundRequest = { signal: AbortSignal; active: () => boolean };
 async function request(action: string, payload: any = {}, background?: BackgroundRequest) {
   restoreSession();
-  const sentToken = sessionToken, sentRevision = sessionRevision;
-  const authenticated = ['status', 'groups', 'claim', 'create-client-key'].includes(action);
+  const invite = action === 'invite' || (action === 'device-challenge' && payload.purpose === 'invite');
+  const sentToken = invite ? '' : sessionToken, sentRevision = sessionRevision;
+  const authenticated = ['status', 'groups', 'claim', 'create-client-key'].includes(action) || (action === 'device-challenge' && !invite);
   const assertCurrentSession = () => {
     if (background && (background.signal.aborted || !background.active())) throw new MemberSessionChanged();
     if (authenticated && (sentToken !== sessionToken || sentRevision !== sessionRevision)) throw new MemberSessionChanged();
   };
   const device = action === 'config' ? null : installation(!background);
-  const timeout = AbortSignal.timeout(['claim', 'create-client-key'].includes(action) ? 120000 : authenticated ? 90000 : 35000);
+  const timeout = AbortSignal.timeout(['claim', 'invite', 'create-client-key'].includes(action) ? 120000 : authenticated ? 90000 : 35000);
   const response = await fetch(`${endpoint}?a=${encodeURIComponent(action)}`, {
     // The server may rotate upstream credentials and verify identity before an
     // authenticated operation. No client-side replay of key/credit writes occurs.
@@ -99,7 +103,9 @@ async function request(action: string, payload: any = {}, background?: Backgroun
   try { data = JSON.parse(body); } catch { throw new Error(`会员服务暂不可用（HTTP ${response.status}）`); }
   if (!response.ok || data.ok === false || data.error) {
     if (authenticated && ['SESSION_EXPIRED', 'AUTH_REJECTED'].includes(data.code)) { saveSession(''); throw new MemberSessionExpired(); }
-    throw new Error(typeof data.error === 'string' ? data.error : data.message || `会员服务暂不可用（HTTP ${response.status}）`);
+    const message = typeof data.error === 'string' ? data.error : data.message || `会员服务暂不可用（HTTP ${response.status}）`;
+    if (['DEVICE_APPROVAL_REQUIRED', 'DEVICE_PROOF_INVALID', 'INVITE_REVIEW_REQUIRED'].includes(data.code)) throw new MemberDeviceError(data.code, message);
+    throw new Error(message);
   }
   if (data.sessionToken) {
     if (!['login', 'login2fa', 'bind'].includes(action)) throw new Error('会员服务返回了意外的登录凭据，请重试');
@@ -110,6 +116,26 @@ async function request(action: string, payload: any = {}, background?: Backgroun
   const { sessionToken: _token, accessToken: _access, refreshToken: _refresh,
     session_token: _legacyToken, access_token: _legacyAccess, refresh_token: _legacyRefresh, ...publicData } = data;
   return publicData;
+}
+
+async function requestBenefit(purpose: 'invite' | 'claim') {
+  const revision = sessionRevision, token = purpose === 'claim' ? sessionToken : '';
+  if (purpose === 'claim' && !token) throw new MemberSessionExpired();
+  const assertSession = () => { if (purpose === 'claim' && revision !== sessionRevision) throw new MemberSessionChanged(); };
+  const identity = await memberDeviceIdentity();
+  assertSession();
+  const installationId = installation().id;
+  const { deviceId, publicKey } = identity;
+  const { challenge, expiresAt } = await request('device-challenge', { deviceId, publicKey, purpose });
+  assertSession();
+  if (typeof challenge !== 'string' || !Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error('会员服务返回的设备验证请求无效。');
+  const signature = identity.signChallenge(purpose, installationId, token, challenge);
+  const result = await request(purpose, { deviceId, publicKey, challenge, signature });
+  assertSession();
+  if (purpose === 'claim') return { ok: result.ok, member: result.member, gift: result.gift, message: result.message };
+  if (typeof result.inviteCode !== 'string' || !result.inviteCode.trim() || result.inviteCode.length > 256 || /[\u0000-\u001f\u007f]/.test(result.inviteCode))
+    throw new Error('平台返回的邀请码无效，请重新查询。');
+  return { ok: true, inviteCode: result.inviteCode };
 }
 
 /** Keep an existing login alive without opening the membership page or issuing writes. */
@@ -176,7 +202,12 @@ export async function memberAction(store: AuroraStore, action: string, payload: 
     if (action === 'member.login2fa') return await request('login2fa', { tempToken: payload.tempToken, totpCode: payload.code });
     if (action === 'member.bind') return await request('bind', { accessToken: String(payload.accessToken || '') });
     if (action === 'member.groups') return await request('groups');
-    if (action === 'member.claim') return await request('claim');
+    if (action === 'member.deviceInfo') {
+      const { deviceId, keyId } = await memberDeviceIdentity();
+      return { ok: true, deviceId, keyId };
+    }
+    if (action === 'member.invite') return await requestBenefit('invite');
+    if (action === 'member.claim') return await requestBenefit('claim');
     if (action === 'member.logout') {
       let revoked = true;
       try { if (sessionToken) await request('logout'); } catch { revoked = false; } finally { saveSession(''); }
@@ -205,6 +236,7 @@ export async function memberAction(store: AuroraStore, action: string, payload: 
     // Electron's generic error boundary only retains a message. Return explicit
     // public session state so the renderer cannot keep a stale logged-in view.
     if (error instanceof MemberSessionExpired) return { ok: false, loggedIn: false, authExpired: true, code: 'SESSION_EXPIRED', message: error.message };
+    if (error instanceof MemberDeviceError) return { ok: false, code: error.code, message: error.message };
     throw error;
   } finally { busy = false; }
 }

@@ -35,6 +35,8 @@ window.renderMember=()=>root.render(<ToastHost key={window.generation}><Membersh
               window.aurora={invoke:async(action,payload)=>{window.calls.push({action,payload});
                 if(action==='member.status'){if(window.statusPending)await new Promise(resolve=>window.pendingStatus=resolve);if(window.statusError)throw Error(window.statusError);return structuredClone(window.memberStatus);}
                 if(action==='member.groups'){if(window.groupError)throw Error(window.groupError);return {ok:true,groups:[{id:7,name:'测试分组',platform:'openai',supported:true}]};}
+                if(action==='member.invite')return window.deviceApproved?{ok:true,inviteCode:'LOCAL-INVITE-FIXTURE'}:{ok:false,code:'DEVICE_APPROVAL_REQUIRED',message:'请核准设备'};
+                if(action==='member.deviceInfo')return {ok:true,deviceId:'1'.repeat(64),keyId:'2'.repeat(64)};
                 if(action==='member.logout'){window.memberStatus={ok:true,loggedIn:false,config:window.memberStatus.config};return {ok:true};}
                 if(action==='member.login'&&window.login2fa)return {ok:true,requires2fa:true,tempToken:'fixture-two-factor',emailMasked:'f***@example.invalid'};
                 if(['member.login','member.login2fa','member.bind'].includes(action)){window.memberStatus.loggedIn=true;window.memberStatus.canRefresh=action!=='member.bind';return {ok:true};}
@@ -260,6 +262,22 @@ window.renderMember=()=>root.render(<ToastHost key={window.generation}><Membersh
             assert page.evaluate("window.calls.filter(call=>call.action==='member.bind').length") == 1
             assert claim_count() == 0
             checks.append('Closed campaigns retain two-factor login, renewable sessions and explicit manual-token binding')
+
+            page.evaluate("window.reset();window.memberStatus.loggedIn=false;window.deviceApproved=false;window.renderMember()")
+            invite = page.get_by_role('button', name='获取本机邀请码')
+            expect(invite).to_be_enabled()
+            assert page.evaluate("window.calls.every(c=>!['member.invite','member.deviceInfo'].includes(c.action))")
+            invite.click()
+            expect(page.get_by_role('alert')).to_contain_text('请核准设备')
+            page.get_by_role('button', name='查看本机授权信息').click()
+            expect(page.get_by_label('设备公钥指纹', exact=True)).to_have_value('2' * 64)
+            page.evaluate('window.deviceApproved=true')
+            invite.click()
+            expect(page.get_by_label('本机邀请码', exact=True)).to_have_value('LOCAL-INVITE-FIXTURE')
+            page.get_by_role('button', name='重新查看邀请码').click()
+            expect(page.get_by_role('button', name='复制邀请码')).to_be_visible()
+            assert claim_count() == 0
+            checks.append('Registration invite is available before login, exposes approval help on denial, and only fetches on an explicit click')
 
             for name in ['ui/src/pages/Membership.tsx', 'ui/src/pages/Agents.tsx', 'src/core/presets/providers.ts', 'server/seed-catalog.json']:
                 assert '$10' not in (ROOT / name).read_text(encoding='utf-8'), name

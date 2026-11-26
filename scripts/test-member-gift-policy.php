@@ -5,6 +5,7 @@ if (($argv[1] ?? '') === '--initialization-crash-worker') {
     // Inject an exit immediately after the real first schema COMMIT in a child.
     // This exercises process-restart recovery without adding production test hooks.
     $source = (string)file_get_contents(__DIR__ . '/../server/member_service.php');
+    $source = str_replace("require_once __DIR__ . '/member_", "require_once __DIR__ . '/../server/member_", $source);
     $commit = "\$db->exec('COMMIT');";
     $position = strpos($source, $commit);
     if ($position === false) exit(74);
@@ -15,6 +16,7 @@ if (($argv[1] ?? '') === '--initialization-crash-worker') {
     exit(75);
 }
 require __DIR__ . '/../server/member_service.php';
+require_once __DIR__ . '/test-member-device-fixture.php';
 
 function verifyGift(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
 function giftError(callable $run, string $code): void
@@ -98,11 +100,11 @@ function giftSnapshot(PDO $db, bool $omitPolicy = false): array
 function makeLegacyGiftLedger(string $dir): array
 {
     $service = giftService($dir);
-    $first = giftLogin($service, 1); $service->handle('claim', [], $first);
+    $first = giftLogin($service, 1); memberDeviceTestClaim($service, $first);
     $second = giftLogin($service, 2);
-    giftError(fn() => giftService($dir, 'before-credit')->handle('claim', [], $second), 'UPSTREAM_UNAVAILABLE');
+    giftError(fn() => memberDeviceTestClaim(giftService($dir, 'before-credit'), $second), 'UPSTREAM_UNAVAILABLE');
     $third = giftLogin($service, 3);
-    giftError(fn() => giftService($dir, 'mismatch')->handle('claim', [], $third), 'GRANT_REVIEW_REQUIRED');
+    giftError(fn() => memberDeviceTestClaim(giftService($dir, 'mismatch'), $third), 'GRANT_REVIEW_REQUIRED');
     unset($service);
     $db = giftLedger($dir);
     $db->exec('PRAGMA foreign_keys=OFF');
@@ -133,7 +135,7 @@ if (($argv[1] ?? '') === '--worker') {
         $input = json_decode((string)file_get_contents($argv[4]), true, 32, JSON_THROW_ON_ERROR);
         while (!is_file($dir . '/go')) usleep(10000);
         $service = giftService($dir);
-        $result = $kind === 'save' ? $service->adminSaveGiftPolicy($input) : $service->handle('claim', [], $input);
+        $result = $kind === 'save' ? $service->adminSaveGiftPolicy($input) : memberDeviceTestClaim($service, $input);
         echo json_encode(['ok' => true, 'result' => $result], JSON_THROW_ON_ERROR);
     } catch (MemberError $error) { echo json_encode(['ok' => false, 'code' => $error->errorCode]); }
     catch (Throwable $error) { fwrite(STDERR, get_class($error) . ': ' . $error->getMessage()); exit(1); }
@@ -212,7 +214,7 @@ $test('new grants use saved amounts and receipts and admin totals sum actual cen
     $service = giftService($dir); $campaign = $service->publicConfig()['campaign'];
     foreach (['12.34', '0.01', '10000.00'] as $index => $amount) {
         setGift($service, $amount, true, '后台说明'); $credentials = giftLogin($service, $index + 1);
-        $result = $service->handle('claim', [], $credentials);
+        $result = memberDeviceTestClaim($service, $credentials);
         verifyGift($result['gift']['amountUsd'] === $service->adminGiftPolicy()['amountUsd'], 'Stored amount returned');
         verifyGift($result['gift']['campaign'] === $campaign, 'Policy never changes campaign');
     }
@@ -229,26 +231,26 @@ $test('disabled gift policy leaves login groups and client key available and cre
     verifyGift($service->publicConfig()['enabled'] && !$service->publicConfig()['giftEnabled'], 'Membership remains active');
     verifyGift(count($service->handle('groups', [], $credentials)['groups']) === 1, 'Groups available');
     verifyGift($service->handle('create-client-key', ['groupId' => 7], $credentials)['ok'], 'Client key available');
-    giftError(fn() => $service->handle('claim', [], $credentials), 'GIFT_DISABLED');
+    giftError(fn() => memberDeviceTestClaim($service, $credentials), 'GIFT_DISABLED');
     verifyGift((int)giftLedger($dir)->query('SELECT COUNT(*) FROM welcome_grants')->fetchColumn() === 0, 'No reservation');
 });
 $test('pending recovery uses original amount after policy change and disable before or after upstream credit', static function ($dir): void {
     foreach (['before-credit','after-credit'] as $index => $mode) {
         $sub = $dir . '/' . $mode; mkdir($sub); $service = giftService($sub, $mode); setGift($service, '6.37'); $credentials = giftLogin($service);
-        giftError(fn() => $service->handle('claim', [], $credentials), 'UPSTREAM_UNAVAILABLE');
+        giftError(fn() => memberDeviceTestClaim($service, $credentials), 'UPSTREAM_UNAVAILABLE');
         $row = giftLedger($sub)->query('SELECT * FROM welcome_grants')->fetch(PDO::FETCH_ASSOC);
         setGift($service, '99.99', false);
         verifyGift($service->handle('status', [], $credentials)['gift']['amountUsd'] === 6.37, 'Pending amount stays original');
-        $result = giftService($sub)->handle('claim', [], $credentials);
+        $result = memberDeviceTestClaim(giftService($sub), $credentials);
         verifyGift($result['gift']['status'] === 'claimed' && $result['gift']['amountUsd'] === 6.37 && $result['gift']['code'] === $row['code'], 'Recovered original reservation');
         verifyGift((int)giftDb($sub . '/upstream.sqlite')->query('SELECT SUM(cents) FROM codes')->fetchColumn() === 637, 'No replacement credit');
     }
 });
 $test('review and claimed records retain original amount while disabled and exact receipt mismatch is never rounded', static function ($dir): void {
     $service = giftService($dir, 'mismatch'); setGift($service, '4.21'); $credentials = giftLogin($service);
-    giftError(fn() => $service->handle('claim', [], $credentials), 'GRANT_REVIEW_REQUIRED'); setGift($service, '20', false);
+    giftError(fn() => memberDeviceTestClaim($service, $credentials), 'GRANT_REVIEW_REQUIRED'); setGift($service, '20', false);
     $status = $service->handle('status', [], $credentials)['gift']; verifyGift($status['status'] === 'review' && $status['amountUsd'] === 4.21, 'Review preserves grant');
-    giftError(fn() => $service->handle('claim', [], $credentials), 'GRANT_REVIEW_REQUIRED');
+    giftError(fn() => memberDeviceTestClaim($service, $credentials), 'GRANT_REVIEW_REQUIRED');
     $result = giftService($dir)->adminReconcile(1, false);
     verifyGift($result['gift']['status'] === 'claimed' && $result['gift']['amountUsd'] === 4.21, 'Read-only reconciliation of actual receipt');
     verifyGift($service->handle('status', [], $credentials)['gift']['amountUsd'] === 4.21, 'Claimed unaffected');
@@ -256,7 +258,7 @@ $test('review and claimed records retain original amount while disabled and exac
 $test('client supplied policy and money cannot change a grant', static function ($dir): void {
     $service = giftService($dir); setGift($service, '2.13'); $credentials = giftLogin($service);
     foreach (['amountUsd' => '90', 'amount' => 9000, 'value' => 10, 'userId' => 90, 'giftEnabled' => true, 'amountCents' => 1, 'giftUsd' => 1, 'giftPolicyRevision' => 2, 'campaign' => 'new'] as $key => $value) giftError(fn() => $service->handle('claim', [$key => $value], $credentials), 'INVALID_FIELDS');
-    verifyGift($service->handle('claim', [], $credentials)['gift']['amountUsd'] === 2.13, 'Untrusted fields have no authority');
+    verifyGift(memberDeviceTestClaim($service, $credentials)['gift']['amountUsd'] === 2.13, 'Untrusted fields have no authority');
 });
 $test('optimistic policy revisions reject stale saves and simultaneous writers commit only one', static function ($dir): void {
     $service = giftService($dir); $revision = $service->adminGiftPolicy()['revision'];
@@ -282,11 +284,11 @@ $test('simultaneous disabling and claims serialize policy with one durable accou
     else verifyGift((int)giftDb($dir . '/upstream.sqlite')->query('SELECT COUNT(*) FROM codes')->fetchColumn() === 0, 'No grant after disable');
 });
 $test('policy changes and re-enabling never reset once-per-account or once-per-install eligibility', static function ($dir): void {
-    $service = giftService($dir); setGift($service,'1.23'); $service->handle('claim', [], giftLogin($service,1,1));
+    $service = giftService($dir); setGift($service,'1.23'); memberDeviceTestClaim($service, giftLogin($service,1,1));
     setGift($service,'90',false); setGift($service,'2.34',true);
-    verifyGift($service->handle('claim', [], giftLogin($service,1,2))['gift']['amountUsd'] === 1.23, 'Account never receives twice');
+    verifyGift(memberDeviceTestClaim($service, giftLogin($service,1,2))['gift']['amountUsd'] === 1.23, 'Account never receives twice');
     $other = giftLogin($service,2,1); verifyGift($service->handle('status', [], $other)['gift']['status'] === 'ineligible', 'Install stays used');
-    giftError(fn() => $service->handle('claim', [], $other), 'INSTALLATION_ALREADY_CLAIMED');
+    giftError(fn() => memberDeviceTestClaim($service, $other), 'INSTALLATION_ALREADY_CLAIMED');
     verifyGift((int)giftDb($dir . '/upstream.sqlite')->query('SELECT COUNT(*) FROM codes')->fetchColumn() === 1, 'One actual credit');
 });
 $test('policy changed during authentication uses the amount at reservation and later changes cannot alter fulfillment', static function ($dir): void {
@@ -296,7 +298,7 @@ $test('policy changed during authentication uses the amount at reservation and l
         if (str_starts_with($path,'/admin/redeem-codes?')) setGift($admin,'99',false);
         return null;
     });
-    $result = $service->handle('claim', [], $credentials);
+    $result = memberDeviceTestClaim($service, $credentials);
     verifyGift($result['gift']['amountUsd'] === 5.67 && !$admin->adminGiftPolicy()['enabled'], 'Atomic reservation pins current policy');
     verifyGift((int)giftDb($dir.'/upstream.sqlite')->query('SELECT SUM(cents) FROM codes')->fetchColumn()===567,'Fulfillment uses reserved cents');
 });
@@ -321,7 +323,7 @@ $test('legacy CHECK migration preserves every row byte value and all other table
     $backup = giftDb($backups[0]); verifyGift(giftSnapshot($backup) === $before, 'Backup contains exact pre-migration values');
     verifyGift(str_contains($backup->query("SELECT sql FROM sqlite_master WHERE name='welcome_grants'")->fetchColumn(), 'CHECK(amount_cents=1000)'), 'Backup retains legacy schema');
     if (PHP_OS_FAMILY !== 'Windows') verifyGift((fileperms($backups[0]) & 0077) === 0, 'Backup permissions private');
-    setGift($service,'1.11'); $new = giftLogin($service,4); verifyGift($service->handle('claim', [], $new)['gift']['amountUsd'] === 1.11, 'Migrated new grant supports variable amount');
+    setGift($service,'1.11'); $new = giftLogin($service,4); verifyGift(memberDeviceTestClaim($service, $new)['gift']['amountUsd'] === 1.11, 'Migrated new grant supports variable amount');
     verifyGift((int)$db->query('SELECT COUNT(*) FROM fixture_children')->fetchColumn() === 1, 'No FK cascade');
     verifyGift((int)$db->query('SELECT COUNT(*) FROM fixture_audit')->fetchColumn() > 2, 'Original trigger remains active');
     foreach (["UPDATE welcome_grants SET amount_cents=0", "UPDATE welcome_grants SET amount_cents=1.5", "UPDATE welcome_grants SET status='invalid'", "UPDATE welcome_grants SET fixture_blob=X''", "UPDATE welcome_grants SET code='duplicate'"] as $sql) {
@@ -346,7 +348,7 @@ $test('damaged or missing policy never falls back to an enabled promotion or res
     $original = $db->query("SELECT value FROM member_meta WHERE key='welcome_gift_policy'")->fetchColumn();
     foreach (['not-json','{}','{"enabled":true,"amountCents":0,"message":"","revision":2}'] as $broken) {
         $q = $db->prepare("UPDATE member_meta SET value=? WHERE key='welcome_gift_policy'"); $q->execute([$broken]);
-        giftError(fn() => $service->publicConfig(),'STORAGE_UNAVAILABLE'); giftError(fn() => $service->handle('claim', [], $credentials),'STORAGE_UNAVAILABLE');
+        giftError(fn() => $service->publicConfig(),'STORAGE_UNAVAILABLE'); giftError(fn() => memberDeviceTestClaim($service, $credentials),'STORAGE_UNAVAILABLE');
         verifyGift($db->query("SELECT value FROM member_meta WHERE key='welcome_gift_policy'")->fetchColumn() === $broken, 'Corrupt data never overwritten');
     }
     $db->exec("DELETE FROM member_meta WHERE key='welcome_gift_policy'"); giftError(fn() => giftService($dir)->publicConfig(),'STORAGE_UNAVAILABLE');

@@ -8,7 +8,9 @@ $source = str_replace("\r\n", "\n", $source);
 $source = str_replace($needle, $needle . "\n        if ((\$GLOBALS['catalogPublishFailure'] ?? '') === \$name) throw new RuntimeException('Simulated filesystem failure');", $source, $injected);
 if ($injected !== 1) throw new RuntimeException('Persistence fault injection failed');
 file_put_contents($root . '/catalog_sync.php', $source);
-copy(__DIR__ . '/../server/member_service.php', $root . '/member_service.php');
+foreach (['member_device.php', 'member_invite.php', 'member_service.php'] as $dependency) {
+    copy(__DIR__ . '/../server/' . $dependency, $root . '/' . $dependency);
+}
 require $root . '/catalog_sync.php';
 ini_set('error_log', $root . '/error.log');
 $catalog = ['version' => 5, 'providers' => [['key' => 'fixture', 'format' => 'openai-responses',

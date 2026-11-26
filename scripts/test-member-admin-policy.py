@@ -103,7 +103,7 @@ def main():
         webroot, data, ledger = private / "web", private / "admin", private / "ledger"
         for directory in (webroot, data, ledger):
             directory.mkdir(mode=0o700)
-        for name in ("lib.php", "api.php", "member_admin.php", "member_service.php", "member.php"):
+        for name in ("lib.php", "api.php", "member_device.php", "member_invite.php", "member_admin.php", "member_service.php", "member.php"):
             source = (ROOT / "server" / name).read_text(encoding="utf-8")
             if name == "lib.php":
                 source = replace_once(source, "const AURORA_DATA_DIR = '/www/aurora-data';",
@@ -211,6 +211,18 @@ return static function (string $method, string $path, array $headers, ?array $bo
                 assert form["_csrf"] == json.loads(request("/api.php?a=whoami")[1])["csrf"]
                 assert form["amountUsd"] == "10.00" and form["enabled"] == "1" and form["revision"] == "1"
                 passed("real password login exposes a CSRF-protected default policy form")
+
+                device_form = {"action": "authorize-device", "deviceId": "1" * 64, "keyId": "2" * 64}
+                assert request(fields=device_form, client=anonymous)[0] == 302
+                assert request(fields=device_form)[0] == 419
+                assert request(fields={**device_form, "_csrf": form["_csrf"]})[0] == 200
+                with closing(sqlite3.connect(ledger / "members.sqlite")) as connection:
+                    device_hash, active = connection.execute("SELECT device_hash, active FROM member_devices").fetchone()
+                assert active == 1 and device_hash != device_form["deviceId"]
+                status, body, _ = request(fields={"action": "revoke-device", "_csrf": form["_csrf"], "deviceHash": device_hash})
+                assert status == 200 and "已撤销" in body
+                assert request(fields={**device_form, "_csrf": form["_csrf"], "deviceId": "bad"})[0] == 400
+                passed("device enrollment and revocation require administrator login, CSRF, and valid fingerprints")
 
                 status, body, _ = request("/fixture-unconfigured.php")
                 assert status == 200 and "会员服务尚未启用" in body and "gift-policy-form" not in body, (status, body[:500])
