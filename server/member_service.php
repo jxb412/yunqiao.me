@@ -62,6 +62,7 @@ final class MemberService
     {
         $policy = $this->configured() ? $this->adminGiftPolicy() : $this->defaultGiftPolicy();
         return ['ok' => true, 'enabled' => $this->configured(), 'giftEnabled' => $this->configured() && $policy['enabled'],
+            'deviceAutoApprove' => $this->configured() && $this->adminDeviceApprovalPolicy()['autoApprove'],
             'giftUsd' => $policy['amountUsd'], 'giftMessage' => $policy['message'], 'giftPolicyRevision' => $policy['revision'],
             'currency' => 'USD', 'accountUrl' => $this->validOrigin() ? $this->config['origin'] : 'https://api.yunqiao.me',
             'campaign' => self::CAMPAIGN];
@@ -391,18 +392,22 @@ final class MemberService
 
     private function rateLimit(string $kind, string $identity, int $limit, int $window): void
     {
+        $this->transaction(fn() => $this->countRateLimit($kind, $identity, $limit, $window));
+    }
+
+    /** Increment under the caller's BEGIN IMMEDIATE, including any enrollment it admits. */
+    private function countRateLimit(string $kind, string $identity, int $limit, int $window): void
+    {
         $key = hash_hmac('sha256', $kind . ':' . $identity, $this->config['secret']);
-        $this->transaction(function () use ($key, $limit, $window): void {
-            $row = $this->execute('SELECT * FROM member_rate_limits WHERE key=?', [$key])->fetch(PDO::FETCH_ASSOC);
-            $now = time();
-            if ($row && $row['window_start'] > $now - $window && $row['attempts'] >= $limit) {
-                throw new MemberError('RATE_LIMITED', '请求过于频繁，请稍后再试', 429);
-            }
-            $fresh = !$row || $row['window_start'] <= $now - $window;
-            $this->execute('INSERT OR REPLACE INTO member_rate_limits(key,window_start,attempts) VALUES(?,?,?)',
-                [$key, $fresh ? $now : $row['window_start'], $fresh ? 1 : $row['attempts'] + 1]);
-            $this->execute('DELETE FROM member_rate_limits WHERE window_start<?', [$now - 86400]);
-        });
+        $row = $this->execute('SELECT * FROM member_rate_limits WHERE key=?', [$key])->fetch(PDO::FETCH_ASSOC);
+        $now = time();
+        if ($row && $row['window_start'] > $now - $window && $row['attempts'] >= $limit) {
+            throw new MemberError('RATE_LIMITED', '请求过于频繁，请稍后再试', 429);
+        }
+        $fresh = !$row || $row['window_start'] <= $now - $window;
+        $this->execute('INSERT OR REPLACE INTO member_rate_limits(key,window_start,attempts) VALUES(?,?,?)',
+            [$key, $fresh ? $now : $row['window_start'], $fresh ? 1 : $row['attempts'] + 1]);
+        $this->execute('DELETE FROM member_rate_limits WHERE window_start<?', [$now - 86400]);
     }
 
     private function installation(array $credentials, bool $create): string
@@ -858,7 +863,7 @@ final class MemberService
             if (array_key_exists($forbidden, $body)) throw new MemberError('INVALID_FIELDS', '请求包含不允许的会员字段');
         }
         if ($action === 'device-challenge') return $this->deviceChallenge($body, $credentials, $remoteAddress);
-        if ($action === 'invite') return $this->deviceInvitation($this->verifyDeviceProof('invite', $body, $credentials));
+        if ($action === 'invite') return $this->deviceInvitation($this->verifyDeviceProof('invite', $body, $credentials, $remoteAddress));
         if (in_array($action, ['login', 'login2fa', 'bind'], true)) {
             $this->rateLimit('login', $remoteAddress, 12, 300);
             if ($action === 'bind') return $this->createSession((string)($body['accessToken'] ?? ''), $credentials);
@@ -898,7 +903,7 @@ final class MemberService
             return ['ok' => true];
         }
         if (!in_array($action, ['status', 'groups', 'create-client-key', 'claim'], true)) throw new MemberError('UNKNOWN_ACTION', '会员操作不存在', 404);
-        $deviceHash = $action === 'claim' ? $this->verifyDeviceProof('claim', $body, $credentials) : null;
+        $deviceHash = $action === 'claim' ? $this->verifyDeviceProof('claim', $body, $credentials, $remoteAddress) : null;
         $session = $this->authenticatedSession($session);
         $profile = $session['verified_profile'];
         if ($action === 'status') {

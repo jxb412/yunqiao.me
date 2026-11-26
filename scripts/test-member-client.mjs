@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { randomBytes, createCipheriv, createDecipheriv, createHash, createPublicKey, verify } from 'node:crypto';
+import { randomBytes, createCipheriv, createDecipheriv, createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { build } from 'esbuild';
 
@@ -143,6 +143,22 @@ try {
     assert.equal((await f.api.memberAction(f.store, 'member.status', {})).loggedIn, false);
     await assert.rejects(() => login(f), /安全存储/); assert.equal(f.control.requests.length, 1);
     assert(!fs.existsSync(path.join(f.directory, 'member-installation.enc')));
+  });
+  if (process.platform === 'win32') await test('existing Windows device keys retain their original MachineGuid identity', async () => {
+    const f = fixture('legacy-device-key');
+    const file = path.join(f.directory, 'member-device-key.enc');
+    const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const saved = f.safeStorage.encryptString(pair.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString());
+    fs.writeFileSync(file, saved);
+    const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+    const result = spawnSync(reg, ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid', '/reg:64'], { encoding: 'utf8', windowsHide: true });
+    const value = result.stdout.match(/MachineGuid\s+REG_SZ\s+([a-f0-9-]{36})/i)?.[1];
+    assert(value && result.status === 0, 'Expected an installation identifier');
+    const expected = createHash('sha256').update(['yunqiao-member-machine-v1', 'win32', value.toLowerCase()].join('\0')).digest('hex');
+    const info = await f.api.memberAction(f.store, 'member.deviceInfo', {});
+    assert(info.deviceId === expected, 'Legacy identity changed');
+    assert.equal(info.keyId, createHash('sha256').update(pair.publicKey.export({ format: 'der', type: 'spki' })).digest('hex'));
+    assert.deepEqual(fs.readFileSync(file), saved);
   });
   await test('public device fingerprints survive restarts; only an explicit benefit operation requests a signed challenge', async () => {
     const f = fixture('device-info');

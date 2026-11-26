@@ -10,6 +10,7 @@ $message = '';
 $errorMessage = '';
 $overview = ['enabled' => false, 'totals' => ['claimed' => 0, 'pending' => 0, 'review' => 0, 'amountUsd' => 0], 'grants' => []];
 $policy = null;
+$devicePolicy = null;
 $devices = [];
 $pendingInvites = [];
 $service = null;
@@ -30,6 +31,14 @@ try {
             $message = $saved['enabled']
                 ? '赠金设置已保存，新申请按每位 $' . member_money($saved['amountUsd']) . ' 发放。'
                 : '赠金活动已暂停。已有申请仍按原金额核对、重试；会员登录和使用不受影响。';
+        } elseif ($action === 'save-device-policy') {
+            $mode = $_POST['mode'] ?? null;
+            $revision = filter_var($_POST['revision'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if (!in_array($mode, ['auto', 'manual'], true) || $revision === false) {
+                throw new MemberError('INVALID_DEVICE_POLICY', '请选择设备核准方式，刷新后重试');
+            }
+            $saved = $service->adminSaveDeviceApprovalPolicy($mode === 'auto', $revision);
+            $message = $saved['autoApprove'] ? '新设备已切换为自动核准。' : '新设备已切换为人工核准。';
         } elseif ($action === 'authorize-device') {
             $service->adminAuthorizeDevice(member_form_value('deviceId'), member_form_value('keyId'));
             $message = '设备已获授权，可在客户端重新获取邀请码或领取额度。';
@@ -63,6 +72,7 @@ if ($service !== null) {
         $overview = $service->adminOverview();
         if ($overview['enabled']) {
             $policy = $service->adminGiftPolicy();
+            $devicePolicy = $service->adminDeviceApprovalPolicy();
             $devices = $service->adminListDevices();
             $pendingInvites = $service->adminPendingInvitations();
         }
@@ -97,9 +107,14 @@ $labels = ['pending' => '待确认', 'claimed' => '已到账', 'review' => '待�
 <div class="policy-grid"><label>每位会员赠送额度（USD）<input type="number" name="amountUsd" min="0.01" max="10000" step="0.01" inputmode="decimal" required value="<?= member_h(member_money($policy['amountUsd'])) ?>"><span class="small">0.01 至 10000 美元，最多两位小数。</span></label><label>客户端活动说明<textarea name="message" maxlength="200" rows="2" placeholder="可选，最多 200 字"><?= member_h($policy['message']) ?></textarea><span class="small">显示在客户端会员页；留空时使用默认说明。</span></label></div>
 <button type="submit">保存赠金设置</button><span class="small">保存后对新申请立即生效，无需重新编译客户端。关闭活动只暂停新申请；待确认申请保留原金额，仍可核对和重试。修改金额或重新开启不会重置已领取资格。</span></form>
 <?php else: ?><p><?= $overview['enabled'] ? '赠金设置暂不可用，恢复会员存储后可继续管理。' : '会员服务尚未启用，请先完成服务器会员配置后管理赠金。' ?></p><?php endif; ?></section>
-<?php if ($policy !== null): ?>
-<section class="panel"><h2>邀请码与赠金的设备授权</h2>
-<p>请先通过可信渠道核实设备归属，并与持机人核对客户端显示的两项完整指纹。授权后，这把设备密钥可以领取本机邀请码，并为符合资格的会员申请赠金。更换密钥前请先撤销旧授权。</p>
+<?php if ($devicePolicy !== null): ?>
+<section class="panel"><div class="policy-title"><h2>邀请码与赠金的设备授权</h2><span class="tag <?= $devicePolicy['autoApprove'] ? '' : 'off' ?>"><?= $devicePolicy['autoApprove'] ? '自动核准' : '人工核准' ?></span></div>
+<form method="post" class="policy-form" id="device-policy-form"><input type="hidden" name="_csrf" value="<?= member_h(csrf_token()) ?>"><input type="hidden" name="action" value="save-device-policy"><input type="hidden" name="revision" value="<?= member_h($devicePolicy['revision']) ?>">
+<label class="toggle"><input type="radio" name="mode" value="auto" <?= $devicePolicy['autoApprove'] ? 'checked' : '' ?>>自动核准新设备</label>
+<label class="toggle"><input type="radio" name="mode" value="manual" <?= $devicePolicy['autoApprove'] ? '' : 'checked' ?>>人工核准新设备</label>
+<p class="small">自动模式会在首次领取时登记通过签名验证的新设备。其他工具也能生成自己的密钥并申请登记。人工模式下，管理员须先核实设备归属。</p>
+<button type="submit">保存设备核准方式</button></form>
+<h3>手动授权设备</h3><p>切换核准方式只影响新设备。恢复已撤销的设备或更换设备密钥时，请通过可信渠道与持机人核对下方两项值。更换密钥前请先撤销旧授权。</p>
 <form class="device-form" method="post"><input type="hidden" name="_csrf" value="<?= member_h(csrf_token()) ?>"><input type="hidden" name="action" value="authorize-device">
 <label>设备标识<input name="deviceId" pattern="[a-f0-9]{64}" minlength="64" maxlength="64" required autocomplete="off"></label>
 <label>设备公钥指纹<input name="keyId" pattern="[a-f0-9]{64}" minlength="64" maxlength="64" required autocomplete="off"></label>

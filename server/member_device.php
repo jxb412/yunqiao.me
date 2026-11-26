@@ -1,32 +1,51 @@
 <?php
 declare(strict_types=1);
 
-/** Private methods run inside MemberService; only the authenticated admin page exposes approval. */
+/** Device credentials and enrollment policy share the membership ledger. */
 trait MemberDeviceProof
 {
     private function initializeDeviceProof(PDO $db): void
     {
+        $oldChallenge = 'CREATE TABLE member_device_challenges (
+                nonce_hash TEXT PRIMARY KEY, device_hash TEXT NOT NULL REFERENCES member_devices(device_hash),
+                context_hash TEXT NOT NULL, expires_at INTEGER NOT NULL)';
         $schema = [
             'member_devices' => 'CREATE TABLE member_devices (
                 device_hash TEXT PRIMARY KEY, key_id TEXT NOT NULL UNIQUE, active INTEGER NOT NULL CHECK(active IN (0,1)),
                 updated_at INTEGER NOT NULL, gift_user_id INTEGER UNIQUE)',
             'member_device_challenges' => 'CREATE TABLE member_device_challenges (
-                nonce_hash TEXT PRIMARY KEY, device_hash TEXT NOT NULL REFERENCES member_devices(device_hash),
+                nonce_hash TEXT PRIMARY KEY, device_hash TEXT NOT NULL, key_id TEXT NOT NULL,
                 context_hash TEXT NOT NULL, expires_at INTEGER NOT NULL)',
+            'member_device_keys' => 'CREATE TABLE member_device_keys (
+                key_id TEXT PRIMARY KEY, device_hash TEXT NOT NULL REFERENCES member_devices(device_hash))',
         ];
         $actual = $db->query("SELECT name, sql FROM sqlite_master WHERE type='table'
-            AND name IN ('member_devices','member_device_challenges')")->fetchAll(PDO::FETCH_KEY_PAIR);
+            AND name IN ('member_devices','member_device_challenges','member_device_keys')")->fetchAll(PDO::FETCH_KEY_PAIR);
+        $normalize = static fn(string $sql): string => str_replace("\r\n", "\n", $sql);
+        $actual = array_map($normalize, $actual);
+        $schema = array_map($normalize, $schema);
         $version = $db->query("SELECT value FROM member_meta WHERE key='device_proof_version'")->fetchColumn();
-        if ($version === '1' && $actual == $schema) return;
-        if ($actual || $version !== false) {
+        if ($version === '2' && $actual == $schema) return;
+        $legacy = $version === '1' && $actual == [
+            'member_devices' => $schema['member_devices'], 'member_device_challenges' => $normalize($oldChallenge)];
+        if (!$legacy && ($actual || $version !== false)) {
             throw new MemberError('STORAGE_UNAVAILABLE', '设备授权账本不完整，请联系管理员恢复备份', 503);
         }
         $db->exec('BEGIN IMMEDIATE');
         try {
-            foreach ($schema as $sql) $db->exec($sql);
+            if ($legacy) {
+                // Version 1 challenges were ephemeral and did not bind a particular public key.
+                $db->exec('DROP TABLE member_device_challenges');
+            } else {
+                $db->exec($schema['member_devices']);
+            }
+            $db->exec($schema['member_device_challenges']);
+            $db->exec($schema['member_device_keys']);
+            $db->exec('INSERT INTO member_device_keys(key_id,device_hash) SELECT key_id,device_hash FROM member_devices');
             $db->exec('CREATE INDEX member_device_challenges_expiry ON member_device_challenges(expires_at);
                 CREATE INDEX member_device_challenges_device ON member_device_challenges(device_hash)');
-            $db->exec("INSERT INTO member_meta(key,value) VALUES('device_proof_version','1')");
+            $db->exec("INSERT INTO member_meta(key,value) VALUES('device_approval_policy','{\"autoApprove\":true,\"revision\":1}')");
+            $db->exec("INSERT OR REPLACE INTO member_meta(key,value) VALUES('device_proof_version','2')");
             $db->exec('COMMIT');
         } catch (Throwable $error) {
             $db->exec('ROLLBACK');
@@ -45,6 +64,36 @@ trait MemberDeviceProof
         if (!$this->configured()) throw new MemberError('MEMBERS_DISABLED', '会员服务尚未启用', 503);
     }
 
+    public function adminDeviceApprovalPolicy(): array
+    {
+        $this->requireDeviceAdministration();
+        $raw = $this->execute("SELECT value FROM member_meta WHERE key='device_approval_policy'")->fetchColumn();
+        $policy = is_string($raw) ? json_decode($raw, true) : null;
+        if (!is_array($policy) || !is_bool($policy['autoApprove'] ?? null)
+            || !is_int($policy['revision'] ?? null) || $policy['revision'] < 1) {
+            throw new MemberError('STORAGE_UNAVAILABLE', '设备核准设置异常，请联系管理员恢复备份', 503);
+        }
+        return ['autoApprove' => $policy['autoApprove'], 'revision' => $policy['revision']];
+    }
+
+    public function adminSaveDeviceApprovalPolicy(bool $autoApprove, int $revision): array
+    {
+        $this->requireDeviceAdministration();
+        return $this->transaction(function () use ($autoApprove, $revision): array {
+            $current = $this->adminDeviceApprovalPolicy();
+            if ($current['revision'] !== $revision || $revision >= PHP_INT_MAX) {
+                throw new MemberError('DEVICE_POLICY_CONFLICT', '设备核准设置已变化，请刷新后重试', 409);
+            }
+            if ($current['autoApprove'] === $autoApprove) return $current;
+            $next = ['autoApprove' => $autoApprove, 'revision' => $revision + 1];
+            $this->execute("UPDATE member_meta SET value=? WHERE key='device_approval_policy'", [json_encode($next, JSON_THROW_ON_ERROR)]);
+            if (!$autoApprove) {
+                $this->execute('DELETE FROM member_device_challenges WHERE device_hash NOT IN (SELECT device_hash FROM member_devices)');
+            }
+            return $next;
+        });
+    }
+
     public function adminAuthorizeDevice(string $deviceId, string $keyId): void
     {
         $this->requireDeviceAdministration();
@@ -56,11 +105,12 @@ trait MemberDeviceProof
                 if (hash_equals($device['key_id'], $keyId)) return;
                 throw new MemberError('DEVICE_KEY_CONFLICT', '该设备已有其他有效公钥，请先核实设备并撤销旧授权', 409);
             }
-            if ($this->execute('SELECT 1 FROM member_devices WHERE key_id=? AND device_hash<>?', [$keyId,$hash])->fetchColumn()) {
+            if ($this->execute('SELECT 1 FROM member_device_keys WHERE key_id=? AND device_hash<>?', [$keyId,$hash])->fetchColumn()) {
                 throw new MemberError('DEVICE_KEY_CONFLICT', '该公钥已和其他设备绑定', 409);
             }
             $this->execute('INSERT INTO member_devices(device_hash,key_id,active,updated_at) VALUES(?,?,1,?)
                 ON CONFLICT(device_hash) DO UPDATE SET key_id=excluded.key_id,active=1,updated_at=excluded.updated_at', [$hash,$keyId,time()]);
+            $this->execute('INSERT INTO member_device_keys(key_id,device_hash) VALUES(?,?) ON CONFLICT(key_id) DO NOTHING', [$keyId,$hash]);
         });
     }
 
@@ -103,11 +153,14 @@ trait MemberDeviceProof
         return [hash('sha256', $der), $key];
     }
 
-    private function approvedDevice(string $hash, string $keyId): void
+    /** True for an existing approved key, false for a new key eligible for enrollment. */
+    private function checkDeviceAdmission(string $hash, string $keyId): bool
     {
-        if (!$this->execute('SELECT 1 FROM member_devices WHERE device_hash=? AND key_id=? AND active=1', [$hash,$keyId])->fetchColumn()) {
-            throw new MemberError('DEVICE_APPROVAL_REQUIRED', '请将本机设备凭据交给平台管理员核准后重试', 403);
-        }
+        $device = $this->execute('SELECT active,key_id FROM member_devices WHERE device_hash=?', [$hash])->fetch(PDO::FETCH_ASSOC);
+        if ($device && $device['active'] && hash_equals($device['key_id'], $keyId)) return true;
+        if (!$device && $this->adminDeviceApprovalPolicy()['autoApprove']
+            && !$this->execute('SELECT 1 FROM member_device_keys WHERE key_id=?', [$keyId])->fetchColumn()) return false;
+        throw new MemberError('DEVICE_APPROVAL_REQUIRED', '请将本机设备凭据交给平台管理员核准后重试', 403);
     }
 
     private function deviceMessage(string $purpose, string $deviceId, array $credentials, string $challenge): string
@@ -137,22 +190,21 @@ trait MemberDeviceProof
         [$keyId] = $this->deviceKey($body);
         $nonce = bin2hex(random_bytes(32));
         $context = hash('sha256', $this->deviceMessage($body['purpose'], $deviceId, $credentials, $nonce));
-        $this->approvedDevice($hash, $keyId);
-        // Check approval before recording per-device rate buckets for arbitrary submitted IDs.
-        $this->rateLimit('device-challenge-key', $hash, 40, 300);
         $expires = $this->transaction(function () use ($hash, $keyId, $nonce, $context): int {
-            $this->approvedDevice($hash, $keyId);
+            if ($this->checkDeviceAdmission($hash, $keyId)) {
+                $this->countRateLimit('device-challenge-key', $hash, 40, 300);
+            }
             $now = time();
             $expires = $now + 120;
             $this->execute('DELETE FROM member_device_challenges WHERE expires_at<=?', [$now]);
-            $this->execute('INSERT INTO member_device_challenges(nonce_hash,device_hash,context_hash,expires_at) VALUES(?,?,?,?)',
-                [hash('sha256',$nonce),$hash,$context,$expires]);
+            $this->execute('INSERT INTO member_device_challenges(nonce_hash,device_hash,key_id,context_hash,expires_at) VALUES(?,?,?,?,?)',
+                [hash('sha256',$nonce),$hash,$keyId,$context,$expires]);
             return $expires;
         });
         return ['ok' => true, 'challenge' => $nonce, 'expiresAt' => $expires];
     }
 
-    private function verifyDeviceProof(string $purpose, array $body, array $credentials): string
+    private function verifyDeviceProof(string $purpose, array $body, array $credentials, string $remoteAddress): string
     {
         $nonce = $body['challenge'] ?? null;
         $signature = $body['signature'] ?? null;
@@ -171,11 +223,16 @@ trait MemberDeviceProof
         if (openssl_verify($message, $signatureBytes, $publicKey, OPENSSL_ALGO_SHA256) !== 1) {
             throw new MemberError('DEVICE_PROOF_INVALID', '设备签名验证失败', 403);
         }
-        $this->transaction(function () use ($hash, $keyId, $nonce, $message): void {
-            $this->approvedDevice($hash, $keyId);
-            $used = $this->execute('DELETE FROM member_device_challenges WHERE nonce_hash=? AND device_hash=? AND context_hash=? AND expires_at>?',
-                [hash('sha256',$nonce),$hash,hash('sha256',$message),time()]);
+        $this->transaction(function () use ($hash, $keyId, $nonce, $message, $remoteAddress): void {
+            $approved = $this->checkDeviceAdmission($hash, $keyId);
+            $used = $this->execute('DELETE FROM member_device_challenges WHERE nonce_hash=? AND device_hash=? AND key_id=? AND context_hash=? AND expires_at>?',
+                [hash('sha256',$nonce),$hash,$keyId,hash('sha256',$message),time()]);
             if ($used->rowCount() !== 1) throw new MemberError('DEVICE_PROOF_INVALID', '设备验证已过期或已使用，请重试', 403);
+            if (!$approved) {
+                $this->countRateLimit('device-enroll-ip', $remoteAddress, 5, 3600);
+                $this->execute('INSERT INTO member_devices(device_hash,key_id,active,updated_at) VALUES(?,?,1,?)', [$hash,$keyId,time()]);
+                $this->execute('INSERT INTO member_device_keys(key_id,device_hash) VALUES(?,?)', [$keyId,$hash]);
+            }
         });
         return $hash;
     }

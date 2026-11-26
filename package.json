@@ -1,7 +1,7 @@
 {
   "name": "yunqiao-ai-toolbox",
   "productName": "云桥AI 工具箱",
-  "version": "0.6.13",
+  "version": "0.6.14",
   "description": "云桥 AI · yunqiao.me — 客户端、供应商与模型的统一工作空间。",
   "private": true,
   "type": "module",

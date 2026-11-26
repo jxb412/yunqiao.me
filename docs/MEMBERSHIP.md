@@ -4,14 +4,14 @@
 
 ## 设备授权与注册邀请码
 
-1. 在云桥会员页展开「设备首次授权或更换密钥」，点击「查看本机授权信息」。管理员通过已有的可信联系渠道核实设备归属，核对客户端上的设备标识、公钥指纹，然后在「会员与赠金 → 邀请码与赠金的设备授权」录入两项值。未经独立核实的抄录值不足以判断客户端来源。
+1. 新设备默认在首次请求邀请码或赠金时自动核准。服务端验证一次性挑战的签名后登记该设备的公钥。管理员可在「会员与赠金 → 邀请码与赠金的设备授权」选择「人工核准新设备」并保存。此后新设备需通过人工核对，已有设备沿用原授权状态。
 2. 用户可以在登录前点击「获取本机邀请码」，复制到平台注册页。服务端在 SQLite 中先按设备预约，再向 sub2api 申请一枚注册型邀请码。重复查看始终返回本机原码。注册码只能用于一次注册，用户可以把已取得的码复制给别人，最终注册资格由 sub2api 核销。
 3. 上游响应不明确时，同一设备的后续请求只读取原记录。管理员在「待核对的注册邀请码」以本地申请编号核对上游原始请求及邀请码记录 ID，确认归属后绑定原码。无法确认时保留待核对记录。若 sub2api 明确在管理权限校验阶段拒绝发码，修复权限后可由原设备重试同一申请。
-4. 重装应用时只要系统标识、账户和密钥仍在，就可继续使用。密钥丢失或更换系统用户时，先核实设备并撤销旧密钥，再核准新公钥。同一设备标识会沿用原邀请码和赠金记录。重装系统、虚拟机克隆以及设备标识变化需要人工核实。旧账本有账户和安装记录，只有原安装以获准密钥办理领取核对后才能补记设备归属。
+4. 人工核准时，让持机人在会员页展开「设备授权信息」。通过可信渠道核对设备归属、设备标识和公钥指纹后，在后台「手动授权设备」中录入两项值。恢复已撤销的设备需要人工授权；更换公钥前需先撤销旧授权。系统标识、账户和密钥均保留时，重装应用后可继续使用。同一设备标识沿用原邀请码及赠金记录。旧账本保留账户和安装记录，原安装通过新验证后可补记设备归属。
 
-设备私钥在主进程生成，以操作系统安全存储加密。Windows 使用 MachineGuid、macOS 使用 IOPlatformUUID，客户端先计算应用专用摘要，服务端再以私密 HMAC 保存设备索引。挑战有效期 120 秒，只能使用一次，绑定操作、设备、安装和会员会话。邀请码在登录前领取，该操作不发送会员令牌。赠金还需要上游验证的会员身份。撤销会清除未消费挑战并停止后续授权操作。
+设备私钥在主进程生成，以操作系统安全存储加密。Windows 新设备优先使用 SMBIOS UUID，缺失或为占位值时使用 MachineGuid；已有预览版设备密钥沿用原标识。macOS 使用 IOPlatformUUID。客户端仅发送应用专用摘要，服务端再以私密 HMAC 保存设备索引。挑战有效期 120 秒，只能使用一次，绑定操作、设备、安装和会员会话。邀请码在登录前领取，该操作不发送会员令牌。赠金还需要上游验证的会员身份。撤销会清除未消费挑战并停止后续授权操作。
 
-服务端能验证的是已核准设备公钥的签名。普通 Electron 安装包和操作系统的用户级加密存储均无法给服务端提供当前进程的官方二进制证明。已控制该系统账户或能调用其私钥的软件仍有机会借用该设备的权限。升级服务端后，旧版客户端仍可登录和查询，领取赠金需要升级到支持设备签名的版本。
+签名验证可以确认请求者持有登记的设备私钥。默认自动核准模式允许其他工具以自有密钥和设备标识申请登记，无法保证请求来自官方程序，也无法识别同一物理设备伪造的多个标识。操作系统重装或虚拟机克隆也可能改变或复制系统标识。需要控制新设备准入时，可切换为人工核准并独立核实设备归属。升级服务端后，旧版客户端仍可登录和查询，领取赠金需要升级到支持设备签名的版本。
 
 仅发布此功能时，使用 `python scripts/deploy_php.py --membership-only` 核对文件清单。向用户提供新版客户端、备份会员 SQLite 账本后，以 `--membership-only --apply` 安装两个依赖文件、会员服务和管理页。设备授权使用网站原有管理员登录。验证全流程可运行 `php scripts/test-member-device.php` 和 `php scripts/test-member-invites.php`，两者都使用临时数据库和测试上游。
 
@@ -67,12 +67,12 @@ Authorization: Bearer 本服务 sessionToken（登录后）
 
 | action | JSON 参数 | 返回或效果 |
 | --- | --- | --- |
-| `config` | 无 | `enabled,giftEnabled,giftUsd,giftMessage,giftPolicyRevision,currency:'USD',accountUrl,campaign`；`enabled` 为会员服务状态，`giftEnabled` 单独控制新赠金申请 |
+| `config` | 无 | `enabled,deviceAutoApprove,giftEnabled,giftUsd,giftMessage,giftPolicyRevision,currency:'USD',accountUrl,campaign`；`deviceAutoApprove` 表示新设备是否可自动核准，`giftEnabled` 单独控制新赠金申请 |
 | `login` | `email,password` | 会话结果；需要双因素时返回 `requires2fa:true,tempToken,emailMasked` |
 | `login2fa` | `tempToken,totpCode` | 六位动态验证码校验后返回会话结果 |
 | `bind` | `accessToken` | 从会员站点获得的用户访问 JWT，由服务端 `/auth/me` 验证 |
 | `status` | 无 | `member,gift,expiresAt`，不返回密钥 |
-| `device-challenge` | `deviceId,publicKey,purpose` | 核验已授权的 P-256 公钥，按用途返回一次性挑战和有效期限 |
+| `device-challenge` | `deviceId,publicKey,purpose` | 按设备核准策略核对 P-256 公钥，返回指定用途的一次性挑战和有效期限 |
 | `invite` | `deviceId,publicKey,challenge,signature` | 无需登录，返回本机固定的 `inviteCode` |
 | `claim` | `deviceId,publicKey,challenge,signature` | 需要会员会话。按服务器当前金额预约并核销赠金，已有申请沿用原金额 |
 | `groups` | 无 | `groups:[{id,name,platform,rateMultiplier}]` 当前用户可用的模型分组 |

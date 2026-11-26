@@ -30,12 +30,12 @@ window.renderMember=()=>root.render(<ToastHost key={window.generation}><Membersh
             page.evaluate("""()=>{
               window.generation=0;
               window.reset=()=>{window.generation++;window.calls=[];window.claimError='';window.statusError='';window.groupError='';window.expired=false;window.claimPending=false;window.pendingClaim=null;window.nextGift=null;window.statusPending=false;window.pendingStatus=null;window.login2fa=false;window.reloads=0;window.destination='';
-                window.memberStatus={ok:true,loggedIn:true,config:{enabled:true,giftEnabled:true,giftUsd:10,currency:'USD',giftMessage:'当前活动说明由平台提供',giftPolicyRevision:'fixture-policy'},member:{email:'fixture@example.invalid',balance:0},gift:{status:'eligible',amountUsd:10}};
+                window.memberStatus={ok:true,loggedIn:true,config:{enabled:true,deviceAutoApprove:true,giftEnabled:true,giftUsd:10,currency:'USD',giftMessage:'当前活动说明由平台提供',giftPolicyRevision:'fixture-policy'},member:{email:'fixture@example.invalid',balance:0},gift:{status:'eligible',amountUsd:10}};
                 window.claimResult={ok:true,message:'平台已确认到账',gift:{status:'claimed',claimed:true,amountUsd:10},member:{balance:10}};window.renderMember?.();};
               window.aurora={invoke:async(action,payload)=>{window.calls.push({action,payload});
                 if(action==='member.status'){if(window.statusPending)await new Promise(resolve=>window.pendingStatus=resolve);if(window.statusError)throw Error(window.statusError);return structuredClone(window.memberStatus);}
                 if(action==='member.groups'){if(window.groupError)throw Error(window.groupError);return {ok:true,groups:[{id:7,name:'测试分组',platform:'openai',supported:true}]};}
-                if(action==='member.invite')return window.deviceApproved?{ok:true,inviteCode:'LOCAL-INVITE-FIXTURE'}:{ok:false,code:'DEVICE_APPROVAL_REQUIRED',message:'请核准设备'};
+                if(action==='member.invite')return window.deviceApproved||window.memberStatus.config.deviceAutoApprove?{ok:true,inviteCode:'LOCAL-INVITE-FIXTURE'}:{ok:false,code:'DEVICE_APPROVAL_REQUIRED',message:'请核准设备'};
                 if(action==='member.deviceInfo')return {ok:true,deviceId:'1'.repeat(64),keyId:'2'.repeat(64)};
                 if(action==='member.logout'){window.memberStatus={ok:true,loggedIn:false,config:window.memberStatus.config};return {ok:true};}
                 if(action==='member.login'&&window.login2fa)return {ok:true,requires2fa:true,tempToken:'fixture-two-factor',emailMasked:'f***@example.invalid'};
@@ -266,7 +266,15 @@ window.renderMember=()=>root.render(<ToastHost key={window.generation}><Membersh
             page.evaluate("window.reset();window.memberStatus.loggedIn=false;window.deviceApproved=false;window.renderMember()")
             invite = page.get_by_role('button', name='获取本机邀请码')
             expect(invite).to_be_enabled()
+            expect(page.get_by_text('首次领取时，平台自动核准新设备。', exact=False)).to_be_visible()
             assert page.evaluate("window.calls.every(c=>!['member.invite','member.deviceInfo'].includes(c.action))")
+            invite.click()
+            expect(page.get_by_label('本机邀请码', exact=True)).to_have_value('LOCAL-INVITE-FIXTURE')
+            assert page.evaluate("window.calls.filter(c=>c.action==='member.invite').length===1 && !window.calls.some(c=>c.action==='member.deviceInfo')")
+            checks.append('New devices in automatic mode retrieve the invite before login without an administrator or fingerprint prompt')
+
+            page.evaluate("window.reset();window.memberStatus.loggedIn=false;window.memberStatus.config.deviceAutoApprove=false;window.renderMember()")
+            expect(page.get_by_text('平台已开启人工核准。', exact=False)).to_be_visible()
             invite.click()
             expect(page.get_by_role('alert')).to_contain_text('请核准设备')
             page.get_by_role('button', name='查看本机授权信息').click()

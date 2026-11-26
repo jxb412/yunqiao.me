@@ -29,8 +29,9 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class PolicyForm(HTMLParser):
-    def __init__(self, document):
+    def __init__(self, document, form_id="gift-policy-form"):
         super().__init__(convert_charrefs=True)
+        self.form_id = form_id
         self.fields = {}
         self.active = False
         self.textarea = False
@@ -39,11 +40,11 @@ class PolicyForm(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "form":
-            self.active = attrs.get("id") == "gift-policy-form"
+            self.active = attrs.get("id") == self.form_id
         if not self.active:
             return
         if tag == "input" and attrs.get("name"):
-            if attrs.get("type") != "checkbox" or "checked" in attrs:
+            if attrs.get("type") not in ("checkbox", "radio") or "checked" in attrs:
                 self.fields[attrs["name"]] = attrs.get("value", "")
         if tag == "textarea" and attrs.get("name") == "message":
             self.textarea = True
@@ -224,6 +225,22 @@ return static function (string $method, string $path, array $headers, ?array $bo
                 assert request(fields={**device_form, "_csrf": form["_csrf"], "deviceId": "bad"})[0] == 400
                 passed("device enrollment and revocation require administrator login, CSRF, and valid fingerprints")
 
+                auto = PolicyForm(request()[1], "device-policy-form").fields
+                assert auto["mode"] == "auto" and auto["_csrf"] == form["_csrf"]
+                assert json.loads(request("/member.php?a=config", client=anonymous)[1])["deviceAutoApprove"] is True
+                assert request(fields=auto, client=anonymous)[0] == 302
+                assert request(fields={**auto, "_csrf": "invalid"})[0] == 419
+                assert request(fields={**auto, "mode": "unknown"})[0] == 400
+                status, body, _ = request(fields={**auto, "mode": "manual"})
+                manual = PolicyForm(body, "device-policy-form").fields
+                assert status == 200 and manual["mode"] == "manual"
+                assert json.loads(request("/member.php?a=config", client=anonymous)[1])["deviceAutoApprove"] is False
+                assert request(fields=auto)[0] == 409
+                assert request(fields={**manual, "mode": "auto"})[0] == 200
+                assert json.loads(request("/member.php?a=config", client=anonymous)[1])["deviceAutoApprove"] is True
+                assert PolicyForm(request()[1]).fields == form
+                passed("automatic enrollment defaults on, switches to manual independently, and rejects unauthorized, invalid or stale changes")
+
                 status, body, _ = request("/fixture-unconfigured.php")
                 assert status == 200 and "会员服务尚未启用" in body and "gift-policy-form" not in body, (status, body[:500])
                 assert not (private / "unconfigured-ledger").exists()
@@ -249,6 +266,8 @@ return static function (string $method, string $path, array $headers, ?array $bo
                                 assert page.goto(origin + "/member_admin.php").status == 200
                                 assert page.locator('[name="amountUsd"]').input_value() == "10.00"
                                 assert page.get_by_label("开启新申请赠金").is_checked()
+                                assert page.get_by_label("自动核准新设备").is_checked()
+                                assert not page.get_by_label("人工核准新设备").is_checked()
                                 assert page.get_by_role("button", name="保存赠金设置").is_visible()
                                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Page overflows viewport"
                             assert not browser_errors, browser_errors

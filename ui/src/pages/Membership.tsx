@@ -112,6 +112,11 @@ export default function Membership({ reload, go }: PageProps) {
   const review = gift.status === 'review';
   const recordedGift = claimed || pending || review;
   const config = status?.config;
+  const deviceApprovalHint = statusKnown && config?.enabled && typeof config.deviceAutoApprove === 'boolean'
+    ? config.deviceAutoApprove
+      ? '首次领取时，平台自动核准新设备。'
+      : '平台已开启人工核准。新设备首次领取前，请联系管理员核对设备授权信息。'
+    : '';
   // Issued grants keep the amount confirmed by the service, even when a later
   // campaign changes its amount or stops accepting new claims.
   const amount = recordedGift ? giftAmount(gift.amountUsd) : statusKnown ? giftAmount(gift.amountUsd) ?? giftAmount(config?.giftUsd) : null;
@@ -141,15 +146,15 @@ export default function Membership({ reload, go }: PageProps) {
         </form>}
           <section className="member-invite" aria-labelledby="member-invite-title">
             <h3 id="member-invite-title">本机注册邀请码</h3>
-            <p className="hint">每台获准设备对应一个邀请码，重新查看会返回原码。注册码使用一次后即失效。</p>
+            <p className="hint">{deviceApprovalHint}每台设备对应一个邀请码，可用于一次注册。重新查看会返回原码。</p>
             {inviteCode && <Field label="本机邀请码"><input className="input mono" aria-label="本机邀请码" readOnly value={inviteCode} onFocus={e => e.target.select()} /></Field>}
             <div className="row">
               <Btn size="sm" disabled={loading || !!busy || config?.enabled === false} onClick={() => perform('member.invite')}>{busy === 'member.invite' ? '正在获取…' : inviteCode ? '重新查看邀请码' : '获取本机邀请码'}</Btn>
               {inviteCode && <Btn size="sm" onClick={async () => { await copyText(inviteCode); toast.push('邀请码已复制', 'ok'); }}>复制邀请码</Btn>}
               {!status?.loggedIn && <button className="text-button" type="button" onClick={() => call('app.openExternal', { url: 'https://api.yunqiao.me/register' })}>前往平台注册 ↗</button>}
             </div>
-            <details open={approvalHelp} onToggle={e => setApprovalHelp(e.currentTarget.open)}><summary>设备首次授权或更换密钥</summary>
-              <p className="hint">首次领取邀请码或赠金前，请联系平台管理员核对下方设备标识和公钥指纹。授权后即可在这台设备上领取。</p>
+            <details open={approvalHelp} onToggle={e => setApprovalHelp(e.currentTarget.open)}><summary>设备授权信息</summary>
+              <p className="hint">平台要求人工核准、本机授权已撤销或设备密钥已更换时，请联系管理员核对下方设备标识和公钥指纹。</p>
               {deviceInfo ? <>
                 <Field label="设备标识"><input className="input mono" aria-label="设备标识" readOnly value={deviceInfo.deviceId} /></Field>
                 <Field label="设备公钥指纹"><input className="input mono" aria-label="设备公钥指纹" readOnly value={deviceInfo.keyId} /></Field>

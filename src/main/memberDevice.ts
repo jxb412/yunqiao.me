@@ -10,12 +10,31 @@ const guid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 export const hasProtectedMemberStorage = () => safeStorage.isEncryptionAvailable()
   && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text');
 
-async function systemDeviceId(): Promise<string> {
-  const options = { windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024, encoding: 'utf8' as const };
+const options = { windowsHide: true, timeout: 8000, maxBuffer: 256 * 1024, encoding: 'utf8' as const };
+const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+const placeholderUuids = new Set(['03000200-0400-0500-0006-000700080009', '00020003-0004-0005-0006-000700080009']);
+let firmwareUuid: string | null | undefined;
+async function windowsFirmwareUuid(): Promise<string | null> {
+  if (firmwareUuid !== undefined) return firmwareUuid;
+  const shell = path.join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  try {
+    const { stdout } = await execute(shell, ['-NoProfile', '-NonInteractive', '-Command',
+      '(Get-CimInstance -ClassName Win32_ComputerSystemProduct -Property UUID -ErrorAction Stop).UUID'], options);
+    const uuid = stdout.trim().toLowerCase();
+    const valid = new RegExp('^' + guid + '$').test(uuid)
+      && !/^([0f])\1+$/.test(uuid.replaceAll('-', '')) && !placeholderUuids.has(uuid);
+    firmwareUuid = valid ? uuid : null;
+    return firmwareUuid;
+  } catch { throw new Error('无法读取电脑固件标识，请确认 Windows 管理服务可用后重试。'); }
+}
+
+async function systemDeviceId(useFirmware: boolean): Promise<string> {
   let value: string | undefined;
   try {
-    if (process.platform === 'win32') {
-      const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+    if (useFirmware) {
+      value = await windowsFirmwareUuid() ?? undefined;
+    } else if (process.platform === 'win32') {
+      const reg = path.join(system32, 'reg.exe');
       const { stdout } = await execute(reg, ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid', '/reg:64'], options);
       value = stdout.match(new RegExp('^\\s*MachineGuid\\s+REG_SZ\\s+(' + guid + ')\\s*$', 'im'))?.[1];
     } else if (process.platform === 'darwin') {
@@ -27,15 +46,20 @@ async function systemDeviceId(): Promise<string> {
     }
   } catch { /* Do not expose the native command's output or raw system identifier. */ }
   if (!value || /^([0f])\1+$/i.test(value.replaceAll('-', ''))) throw new Error('无法读取本机设备标识，暂时无法申请邀请码或领取额度。');
-  return createHash('sha256').update(['yunqiao-member-machine-v1', process.platform, value.toLowerCase()].join('\0')).digest('hex');
+  const scope = useFirmware ? 'yunqiao-member-smbios-v1' : 'yunqiao-member-machine-v1';
+  return createHash('sha256').update([scope, process.platform, value.toLowerCase()].join('\0')).digest('hex');
 }
 
-function loadDeviceKey() {
+async function loadDeviceKey() {
   if (!hasProtectedMemberStorage()) throw new Error('系统安全存储暂不可用，请解锁系统账户后重试。');
   const file = path.join(app.getPath('userData'), 'member-device-key.enc');
   if (!fs.existsSync(file)) {
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-    const sealed = safeStorage.encryptString(privateKey.export({ format: 'pem', type: 'pkcs8' }).toString());
+    const pem = privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
+    const useFirmware = process.platform === 'win32' && !!await windowsFirmwareUuid();
+    // Pin the identifier source to this key. Existing PEM-only identities keep
+    // their original ID and a temporarily unavailable reader cannot change it.
+    const sealed = safeStorage.encryptString(useFirmware ? JSON.stringify({ version: 2, source: 'smbios', pem }) : pem);
     fs.mkdirSync(path.dirname(file), { mode: 0o700, recursive: true });
     const temporary = file + '.' + randomUUID() + '.tmp';
     try {
@@ -46,15 +70,23 @@ function loadDeviceKey() {
     } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
   }
   try {
-    const key = createPrivateKey(safeStorage.decryptString(fs.readFileSync(file)));
+    const saved = safeStorage.decryptString(fs.readFileSync(file));
+    const useFirmware = saved.startsWith('{');
+    let pem = saved;
+    if (useFirmware) {
+      const record = JSON.parse(saved);
+      if (process.platform !== 'win32' || record.version !== 2 || record.source !== 'smbios' || typeof record.pem !== 'string') throw new Error();
+      pem = record.pem;
+    }
+    const key = createPrivateKey(pem);
     if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') throw new Error();
-    return key;
+    return { key, useFirmware };
   } catch { throw new Error('无法解密设备签名密钥，请使用原系统账户或恢复本机备份。'); }
 }
 
 export async function memberDeviceIdentity() {
-  const deviceId = await systemDeviceId();
-  const key = loadDeviceKey();
+  const { key, useFirmware } = await loadDeviceKey();
+  const deviceId = await systemDeviceId(useFirmware);
   const der = createPublicKey(key).export({ type: 'spki', format: 'der' });
   return { deviceId, publicKey: der.toString('base64'), keyId: createHash('sha256').update(der).digest('hex'),
     signChallenge(purpose: 'invite' | 'claim', installationId: string, token: string, challenge: string) {
