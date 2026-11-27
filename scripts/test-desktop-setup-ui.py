@@ -285,13 +285,13 @@ window.renderAgents();"""
             assert last_payload('agent.preview')['mode'] == 'direct'
             assert last_payload('agent.preview')['agentId'] == 'claude-desktop'
             dialog.get_by_role('button', name='上一步', exact=True).click()
-            dialog.get_by_role('combobox', name='选择模型', exact=True).select_option('custom-model')
-            expect(dialog.get_by_role('combobox', name='接入方式', exact=True)).to_have_value('direct')
-            expect(dialog.locator('option[value="direct"]')).to_be_enabled()
-            dialog.get_by_role('button', name='预览配置 →', exact=True).click()
-            assert last_payload('agent.preview')['mode'] == 'direct'
-            assert last_payload('agent.preview')['model'] == 'custom-model'
-            passed('Claude Desktop direct mode supports custom IDs from an Anthropic-compatible provider')
+            expect(dialog.locator('option[value="custom-model"]')).to_have_count(0)
+            dialog.get_by_role('button', name='手动输入其他模型 ID').click()
+            dialog.get_by_role('textbox', name='手动模型 ID').fill('custom-model')
+            expect(dialog.get_by_role('button', name='预览配置 →', exact=True)).to_be_disabled()
+            expect(dialog.get_by_role('alert')).to_contain_text('Claude Desktop 需要包含 Claude 型号')
+            assert count('provider.save') == 0
+            passed('Claude Desktop permits actual Claude models and blocks unsupported manual defaults before any write')
 
             dialog = open_wizard(setup="window.state.detected['chatgpt-desktop'].configured=false;window.state.codexCoexist.identity.available=true;window.state.codexCoexist.models=[{official:true,upstreamModel:'gpt-official',displayName:'官方模型'}]")
             dialog.get_by_role('button', name='上一步', exact=True).click()

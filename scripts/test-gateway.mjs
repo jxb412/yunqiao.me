@@ -224,8 +224,8 @@ try {
   store.savePlugin({ id: 'word-guard', enabled: false });
 
   const desktopCatalog = [
-    { id: 'test-model' }, { id: 'vendor/model-2', displayName: 'Other' }, { id: 'claude-fable-5' },
-    { id: 'claude-sonnet-aurora' }, { id: 'yunqiao-model/claude-sonnet-aurora' },
+    { id: 'test-model' }, { id: 'claude-sonnet-4-6' }, { id: 'anthropic/claude-haiku-4-5', displayName: 'Haiku' },
+    { id: 'claude-fable-5' }, { id: 'claude-opus-4-5' },
   ];
   store.saveProvider({ id: provider.id, models: desktopCatalog });
   store.saveAgent({ id: 'claude-desktop', connected: true, providerId: provider.id, model: 'claude-fable-5', modelMap: { sonnet: 'test-model' } });
@@ -233,20 +233,23 @@ try {
   const discovered = await response.json();
   check('Claude Desktop discovery includes each actual model, with the selected default first', () => {
     assert.equal(response.status, 200);
-    assert.deepEqual(discovered.data.map(m => m.id), ['claude-fable-5', 'test-model', 'vendor/model-2', 'yunqiao-model/claude-sonnet-aurora', 'yunqiao-model/yunqiao-model/claude-sonnet-aurora']);
-    assert.equal(discovered.data[2].display_name, 'Other (vendor/model-2)');
+    assert.deepEqual(discovered.data.map(m => m.id), ['claude-fable-5', 'claude-sonnet-4-6', 'anthropic/claude-haiku-4-5', 'claude-opus-4-5']);
+    assert.equal(discovered.data[2].display_name, 'Haiku (anthropic/claude-haiku-4-5)');
   });
-  for (const { id } of desktopCatalog) {
-    const entry = discovered.data.find(m => m.id === id && m.display_name === id) || discovered.data.find(m => m.display_name === id || m.display_name.endsWith(` (${id})`));
+  for (const entry of discovered.data) {
     const info = await call('/claude-desktop/v1/models/' + encodeURIComponent(entry.id));
     assert.equal(info.status, 200);
     assert.deepEqual(await info.json(), entry);
     const sent = await post('/claude-desktop/v1/messages', { model: entry.id, max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] });
     assert.equal(sent.status, 200);
-    assert.equal(requests.at(-1).body.model, id);
+    assert.equal(requests.at(-1).body.model, entry.id);
   }
+  // A provider resync can change catalog order without changing any existing conversation route.
+  store.saveProvider({ id: provider.id, models: [...desktopCatalog].reverse() });
+  const refreshed = await (await call('/claude-desktop/v1/models')).json();
+  assert.deepEqual(Object.fromEntries(refreshed.data.map(m => [m.id, m.display_name])), Object.fromEntries(discovered.data.map(m => [m.id, m.display_name])));
   const countBeforeUnknown = requests.length;
-  response = await post('/claude-desktop/v1/messages', { model: 'another-provider/unknown', max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] });
+  response = await post('/claude-desktop/v1/messages', { model: 'test-model', max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] });
   check('Claude Desktop refuses an undeclared model before sending upstream', () => { assert.equal(response.status, 400); assert.equal(requests.length, countBeforeUnknown); });
   response = await post('/claude-desktop/v1/messages', { model: 'claude-sonnet-aurora', max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] });
   const desktop = await response.json();

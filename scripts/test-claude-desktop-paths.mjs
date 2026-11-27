@@ -16,7 +16,7 @@ try {
   await build({ stdin: { contents: "export * from './src/core/claudeDesktopPaths.ts'; export { getAdapter } from './src/core/agents/adapters.ts'; export { syncLocalClients } from './src/core/localClients.ts'; export { AuroraStore } from './src/core/store/index.ts';", resolveDir: process.cwd(), loader: 'ts' }, outfile: output, bundle: true, platform: 'node', format: 'cjs', define: { 'process.platform': '"win32"' }, logLevel: 'silent' });
   const api = createRequire(import.meta.url)(output);
   const adapter = api.getAdapter('claude-desktop');
-  const provider = { id: 'private-fixture', name: 'Fixture', format: 'anthropic', baseUrl: 'https://fixture.invalid', enabled: true, apiKeys: [{ id: 'key', key: 'sk-private-fixture-key', enabled: true }], models: [{ id: 'claude-sonnet-fixture' }] };
+  const provider = { id: 'private-fixture', name: 'Fixture', format: 'anthropic', baseUrl: 'https://fixture.invalid', enabled: true, apiKeys: [{ id: 'key', key: 'sk-private-fixture-key', enabled: true }], models: [{ id: 'claude-sonnet-4-6' }] };
   const context = { provider, model: provider.models[0].id, gatewayUrl: 'http://127.0.0.1:3425', token: 'private-gateway-token', mode: 'gateway' };
   const fixture = () => {
     const home = path.join(temporary, `home-${++sequence}`); fs.mkdirSync(home); process.env.AURORA_CLIENT_HOME = home;

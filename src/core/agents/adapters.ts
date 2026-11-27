@@ -11,7 +11,7 @@ import { CLAUDE_DESKTOP_PROFILE, claudeDesktopConfigFiles, claudeDesktopRestoreP
 import { readOfficialCodexIdentity, codexCoexistBaseUrl, CODEX_COEXIST_BASE_PATH } from '../gateway/coexist.js';
 import { codexHistoryBasePath } from '../gateway/historyRoute.js';
 import { nativeDirectParameters } from './directConnection.js';
-import { claudeDesktopModels } from './claudeDesktopModels.js';
+import { claudeDesktopModels, isClaudeDesktopModel } from './claudeDesktopModels.js';
 import { discoverHistoryProviderIds, detachManagedHistoryProviders, withHistoryProviderAliases, clearManagedHistoryTarget } from './historyProviders.js';
 import { isGatewayCatalogPath, readManagedGatewayModelCatalog } from './catalogStorage.js';
 import { applyPlan, restorePlan, backupPlanFiles, jsonObject, planned, plannedJson, readText, patchToml, patchEnv, redactConfig, digest, type PlannedFile } from './configFiles.js';
@@ -119,6 +119,7 @@ function validate(ctx: ConnectContext, adapter: AgentAdapter): void {
   if (!officialChoice && !ctx.provider.apiKeys.some(k => k.enabled && k.key) && !['localhost', '127.0.0.1', '[::1]'].includes(providerHost)) throw new Error('请先填写并启用供应商 API Key');
   if (!ctx.provider.models.some(m => m.id === ctx.model)) throw new Error('此模型不在所选供应商的模型列表中');
   if (ctx.mode === 'direct' && ctx.provider.format !== adapter.protocol) throw new Error('直连模式要求供应商与客户端协议一致；请选择本地网关接入');
+  if (adapter.id === 'claude-desktop' && !isClaudeDesktopModel(ctx.model)) throw new Error('Claude Desktop 需要包含 Claude 型号的模型 ID 或供应商路由。请同步并选择兼容模型。');
   for (const [role, model] of Object.entries(ctx.modelMap || {})) {
     if (!['sonnet', 'opus', 'haiku'].includes(role) || !ctx.provider.models.some(m => m.id === model)) throw new Error('模型映射必须使用当前供应商已有的模型');
   }
@@ -355,7 +356,7 @@ function desktopConfigPaths(): string[] {
 }
 const claudeDesktop = makeAdapter({
   id: 'claude-desktop', name: 'Claude 桌面版', vendor: 'Anthropic', category: 'desktop', support: 'automatic', protocol: 'anthropic', description: '通过支持第三方配置的 Claude Desktop 版本接入模型网关。',
-  supportNote: '使用 Claude Desktop 的第三方配置，将所选供应商的模型写入桌面模型菜单。',
+  supportNote: '使用 Claude Desktop 的第三方配置，将供应商提供的兼容 Claude 型号写入桌面模型菜单。',
   docsUrl: 'https://claude.com/docs/third-party/claude-desktop/models', desktop: 'Claude', paths: desktopConfigPaths,
   warnings: ['仅适用于支持 3P / Gateway 的 Claude Desktop 版本；旧版不会读取此配置。', '模型映射模式使用期间需保持云桥网关运行。客户端功能也取决于上游模型能力。'],
   plan(ctx) {
@@ -369,7 +370,7 @@ const claudeDesktop = makeAdapter({
     meta.entries = (meta.entries || []).filter((x: any) => x?.id !== DESKTOP_PROFILE); meta.entries.push({ id: DESKTOP_PROFILE, name: '云桥 AI' }); meta.appliedId = DESKTOP_PROFILE;
     const profile = jsonObject(profileFile);
     Object.assign(profile, { inferenceProvider: 'gateway', inferenceGatewayBaseUrl: ctx.mode === 'gateway' ? ep.baseUrl + '/claude-desktop' : ep.baseUrl, inferenceGatewayAuthScheme: 'bearer', inferenceGatewayApiKey: ep.apiKey,
-      inferenceModels: claudeDesktopModels(ctx.provider, ctx.model, ctx.mode === 'gateway') });
+      inferenceModels: claudeDesktopModels(ctx.provider, ctx.model) });
     return [plannedJson(normal, main), plannedJson(thirdParty, third), plannedJson(metaFile, meta), plannedJson(profileFile, profile)];
   },
 });

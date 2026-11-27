@@ -161,15 +161,16 @@ window.renderAgents=()=>root.render(<ToastHost key={window.generation}><Agents s
             wizard = page.get_by_role('dialog', name='配置 Claude Desktop', exact=True)
             wizard.get_by_role('button', name='下一步：选择模型 →', exact=True).click()
             models = wizard.get_by_role('combobox', name='选择模型', exact=True)
-            expect(models.locator('option:enabled')).to_have_count(4)
-            models.select_option('vendor/custom-model')
-            expect(models.locator('option:checked')).to_have_text('Custom (vendor/custom-model)')
-            wizard.get_by_role('combobox', name='接入方式').select_option('direct')
+            expect(models.locator('option:enabled')).to_have_count(2)
+            expect(models).to_have_value('claude-fable-5')
+            expect(wizard).to_contain_text('另有 2 项未识别为 Claude 型号')
+            models.select_option('claude-opus-5')
+            expect(wizard.locator('option[value="direct"]')).to_be_enabled()
             wizard.get_by_role('button', name='预览配置 →', exact=True).click()
             wizard.get_by_role('button', name='保存配置', exact=True).click()
-            assert calls('agent.connect')[0]['payload']['mode'] == 'direct'
-            assert calls('agent.connect')[0]['payload']['model'] == 'vendor/custom-model'
-            checks.append('Claude Desktop offers the entire provider catalog and saves the chosen default in direct mode')
+            assert calls('agent.connect')[0]['payload']['mode'] == 'gateway'
+            assert calls('agent.connect')[0]['payload']['model'] == 'claude-opus-5'
+            checks.append('Claude Desktop chooses a supported default in a mixed catalog and saves the selected upstream ID')
             expect(wizard.get_by_role('heading', name='配置已保存，重启客户端后生效', exact=True)).to_be_visible()
             wizard.get_by_role('button', name='重新启动客户端', exact=True).click()
             expect(restart_dialog()).to_be_visible()

@@ -39,7 +39,7 @@ try {
     const store = new api.AuroraStore(path.join(root, 'store'));
     store.saveSettings({ gatewayHost: '127.0.0.1', gatewayPort: 3425, gatewayToken: 'fixture-gateway-token', maskSecrets: false });
     const provider = store.saveProvider({ name: 'Fixture API', format: 'openai-responses', baseUrl: 'https://fixture.invalid/v1', enabled: true,
-      models: [{ id: 'model-one' }, { id: 'model-two' }], apiKeys: [{ id: 'fixture-key', label: 'Fixture', key: 'fixture-provider-key', enabled: true, weight: 1 }] });
+      models: [{ id: 'model-one' }, { id: 'model-two' }, { id: 'claude-sonnet-4-6' }], apiKeys: [{ id: 'fixture-key', label: 'Fixture', key: 'fixture-provider-key', enabled: true, weight: 1 }] });
     const config = path.join(client, '.codex', 'config.toml'), auth = path.join(client, '.codex', 'auth.json'), catalog = path.join(store.dir, 'codex-model-catalog.json');
     if (original !== null) write(config, original);
     const token = `fixture.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.fixture`;
@@ -182,7 +182,7 @@ try {
     const f = fixture(label), files = api.getAdapter('claude-desktop').configPaths();
     write(files[0], '{"deploymentMode":"1p","userPreference":true}\n');
     write(files[2], '{"appliedId":"existing","entries":[{"id":"existing","name":"Keep"}]}\n');
-    return { ...f, files, connect: () => f.call('agent.connect', { agentId: 'claude-desktop', authMode: 'api' }), disconnect: () => f.call('agent.disconnect', { agentId: 'claude-desktop' }) };
+    return { ...f, files, connect: () => f.call('agent.connect', { agentId: 'claude-desktop', model: 'claude-sonnet-4-6', authMode: 'api' }), disconnect: () => f.call('agent.disconnect', { agentId: 'claude-desktop' }) };
   }
   await check('Claude Desktop multi-file first connection rolls back existing and newly created files together', async () => {
     const f = claudeFixture('claude-connect'), files = snapshot(f.files), before = stateSnapshot(f);
@@ -209,7 +209,7 @@ try {
     write(files[0], '{"deploymentMode":"1p","originalInstallation":true}\n');
     write(files[2], '{"appliedId":"original","entries":[{"id":"original","name":"Keep"}]}\n');
     const originals = snapshot(files);
-    const connect = () => f.call('agent.connect', { agentId: 'claude-desktop', authMode: 'api' });
+    const connect = () => f.call('agent.connect', { agentId: 'claude-desktop', model: 'claude-sonnet-4-6', authMode: 'api' });
     const disconnect = () => f.call('agent.disconnect', { agentId: 'claude-desktop' });
     const first = await connect(); assert(first.ok, first.message);
     const otherFile = path.join(originalSource === 'standard' ? msix : base, 'Claude-3p', 'configLibrary', 'other-installation.json');

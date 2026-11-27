@@ -1,17 +1,22 @@
 import type { AgentState, Provider } from '../store/types.js';
 
 const legacyAlias = /^claude-(sonnet|opus|haiku)-aurora$/;
-const escapedPrefix = 'yunqiao-model/';
 
-/** The first profile entry is Claude Desktop's default. Keep real upstream IDs wherever possible. */
-export function claudeDesktopModels(provider: Pick<Provider, 'models'>, selected: string | undefined, gateway: boolean) {
-  const models = new Map(provider.models.filter(model => model.id).map(model => [model.id, model]));
+/** Only advertise routes that name an actual Claude model, including provider-qualified IDs. */
+export function isClaudeDesktopModel(id: string): boolean {
+  const route = /^(?:[a-z0-9][a-z0-9._-]*\/)?(?:[a-z]{2,6}\.anthropic\.)?(claude-[a-z0-9.-]+?)(?:-v\d+:\d+)?$/.exec(id);
+  if (!route) return false;
+  return /^claude-(?:sonnet|opus|haiku|fable|mythos)-\d+(?:[-.]\d+)*(?:-latest)?$/.test(route[1])
+    || /^claude-3(?:-[57])?-(?:sonnet|opus|haiku)(?:-(?:\d{8}|latest))?$/.test(route[1]);
+}
+
+/** The first profile entry is Claude Desktop's default. One rejected ID invalidates the entire profile. */
+export function claudeDesktopModels(provider: Pick<Provider, 'models'>, selected?: string) {
+  const models = new Map(provider.models.filter(model => isClaudeDesktopModel(model.id)).map(model => [model.id, model]));
   const ordered = new Set([...(selected && models.has(selected) ? [selected] : []), ...models.keys()]);
   return Array.from(ordered, id => {
     const display = models.get(id)?.displayName?.trim();
-    // Keep the three names used in older conversations available for their original bindings.
-    const name = gateway && (legacyAlias.test(id) || id.startsWith(escapedPrefix)) ? escapedPrefix + id : id;
-    return { name, labelOverride: display && display !== id ? `${display} (${id})` : id };
+    return { name: id, labelOverride: display && display !== id ? `${display} (${id})` : id };
   });
 }
 
@@ -24,7 +29,5 @@ export function claudeDesktopTarget(provider: Provider, state: AgentState, name:
     // Older connection records can carry a provider-qualified model instead of the upstream ID.
     return target.startsWith(provider.id + '/') ? target.slice(provider.id.length + 1) : target;
   }
-  const id = name.startsWith(escapedPrefix) ? name.slice(escapedPrefix.length) : name;
-  if (name.startsWith(escapedPrefix) && !(legacyAlias.test(id) || id.startsWith(escapedPrefix))) return undefined;
-  return provider.models.find(model => model.id === id)?.id;
+  return isClaudeDesktopModel(name) ? provider.models.find(model => model.id === name)?.id : undefined;
 }

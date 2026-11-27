@@ -91,25 +91,33 @@ try {
   const desktopPaths = desktop.configPaths();
   write(desktopPaths[0], JSON.stringify({ deploymentMode: '1p', userPreference: true }));
   write(desktopPaths[2], JSON.stringify({ appliedId: 'existing', entries: [{ id: 'existing', name: 'Existing profile' }] }));
-  const desktopProvider = { ...provider, models: [...provider.models, { id: 'vendor/model-3', displayName: 'Model 3' }, { id: 'claude-fable-5' }, { id: 'model-one' }] };
-  const d = desktop.connect({ ...context, provider: desktopProvider, model: 'model-two' });
+  const desktopCatalog = ['claude-sonnet-4-6', 'claude-opus-4-5', 'anthropic/claude-haiku-4-5', 'claude-fable-5'];
+  const desktopProvider = { ...provider, models: [...provider.models, ...desktopCatalog.map(id => ({ id })), { id: desktopCatalog[2], displayName: 'Haiku' }] };
+  const d = desktop.connect({ ...context, provider: desktopProvider, model: 'claude-opus-4-5' });
   check('Claude Desktop writes all distinct models, default first, and preserves other profiles', () => {
     assert(d.ok, d.message);
     const profile = JSON.parse(read(desktopPaths[3]));
     assert.equal(profile.inferenceProvider, 'gateway');
     assert.equal(profile.inferenceGatewayBaseUrl, 'http://127.0.0.1:3425/claude-desktop');
-    assert.deepEqual(profile.inferenceModels.map(m => m.name), ['model-two', 'model-one', 'vendor/model-3', 'claude-fable-5']);
-    assert.equal(profile.inferenceModels[2].labelOverride, 'Model 3 (vendor/model-3)');
+    assert.deepEqual(profile.inferenceModels.map(m => m.name), [desktopCatalog[1], desktopCatalog[0], desktopCatalog[2], desktopCatalog[3]]);
+    assert.equal(profile.inferenceModels[2].labelOverride, 'Haiku (anthropic/claude-haiku-4-5)');
     assert.equal(profile.coworkEgressAllowedHosts, undefined);
     assert(JSON.parse(read(desktopPaths[2])).entries.some(x => x.id === 'existing'));
     assert(JSON.parse(read(desktopPaths[0])).userPreference);
   });
   check('Multi-file restore removes only newly created profiles and restores previous selection', () => { assert(desktop.disconnect(d.backup).ok); assert(!fs.existsSync(desktopPaths[1])); assert(!fs.existsSync(desktopPaths[3])); assert.equal(JSON.parse(read(desktopPaths[2])).appliedId, 'existing'); assert.equal(JSON.parse(read(desktopPaths[0])).deploymentMode, '1p'); });
-  check('Claude Desktop direct mode lists a single custom ID once, without role aliases', () => {
-    const direct = desktop.connect({ ...context, mode: 'direct', model: 'claude-fable-5', provider: { ...provider, format: 'anthropic', models: [{ id: 'claude-fable-5' }] } });
+  check('Claude Desktop direct mode filters unrecognized IDs before writing and refuses an unrecognized default', () => {
+    const supported = ['claude-sonnet-4-6', 'claude-fable-5', 'claude-mythos-5', 'anthropic/claude-sonnet-4-6',
+      'claude-3-5-haiku-20241022', 'claude-3-7-sonnet-20250219', 'claude-opus-4-1-20250805', 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'];
+    const mixed = { ...provider, format: 'anthropic', models: ['vendor/model-3', ...supported].map(id => ({ id })) };
+    const invalid = desktop.connect({ ...context, mode: 'direct', model: 'vendor/model-3', provider: mixed });
+    assert(!invalid.ok);
+    assert(!desktop.preview({ ...context, model: 'vendor/model-3', provider: mixed }).ok);
+    assert(!fs.existsSync(desktopPaths[3]));
+    const direct = desktop.connect({ ...context, mode: 'direct', model: 'claude-sonnet-4-6', provider: mixed });
     assert(direct.ok, direct.message);
     const profile = JSON.parse(read(desktopPaths[3]));
-    assert.deepEqual(profile.inferenceModels, [{ name: 'claude-fable-5', labelOverride: 'claude-fable-5' }]);
+    assert.deepEqual(profile.inferenceModels, supported.map(id => ({ name: id, labelOverride: id })));
     assert.equal(profile.inferenceGatewayBaseUrl, 'https://example.com');
     assert(desktop.disconnect(direct.backup).ok);
   });
@@ -135,18 +143,17 @@ try {
   const historyHome = path.join(isolated, '.codex');
   const deps = { store, dataDir: store.dir, gatewayStatus: () => ({ running: true }), gatewayUrl: () => context.gatewayUrl,
     historyContext: { home: historyHome, sqliteHome: historyHome, blockingProcesses: async () => [] } };
-  const desktopSelection = { agentId: 'claude-desktop', providerId: savedProvider.id, model: 'model-one' };
-  const firstDesktop = await api.runAction(deps, 'agent.connect', { ...desktopSelection, modelMap: { haiku: 'model-two' } });
-  assert(firstDesktop.ok, firstDesktop.message);
-  const nextDesktop = { ...desktopSelection, model: 'model-two' };
+  const savedDesktopProvider = store.saveProvider({ ...provider, id: undefined, name: 'Desktop fixture', models: [...provider.models, ...desktopCatalog.map(id => ({ id }))] });
+  store.saveAgent({ id: 'claude-desktop', connected: true, providerId: savedDesktopProvider.id, model: 'model-one', modelMap: { haiku: 'model-two' } });
+  const nextDesktop = { agentId: 'claude-desktop', providerId: savedDesktopProvider.id, model: 'claude-fable-5' };
   const desktopPreview = await api.runAction(deps, 'agent.preview', nextDesktop);
   const updatedDesktop = await api.runAction(deps, 'agent.connect', { ...nextDesktop, revision: desktopPreview.revision });
   check('Updating the native default through the wizard keeps every old conversation role on its former upstream', () => {
     assert(updatedDesktop.ok, updatedDesktop.message);
     const { model, modelMap } = store.listAgents()['claude-desktop'];
-    assert.equal(model, 'model-two');
+    assert.equal(model, 'claude-fable-5');
     assert.deepEqual(modelMap, { sonnet: 'model-one', opus: 'model-one', haiku: 'model-two' });
-    assert.equal(JSON.parse(read(desktopPaths[3])).inferenceModels[0].name, 'model-two');
+    assert.equal(JSON.parse(read(desktopPaths[3])).inferenceModels[0].name, 'claude-fable-5');
   });
   assert((await api.runAction(deps, 'agent.disconnect', { agentId: 'claude-desktop' })).ok);
   for (const setting of ['headers', 'providerProxy', 'globalProxy']) {

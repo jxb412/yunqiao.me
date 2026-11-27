@@ -251,7 +251,7 @@ export class GatewayServer {
       const state = this.deps.store.listAgents()['claude-desktop'];
       const provider = state?.connected && state.providerId ? this.deps.store.getProvider(state.providerId) : undefined;
       const metadata = (id: string, label: string) => ({ id, type: 'model', display_name: label, created_at: '2026-01-01T00:00:00Z' });
-      const data = provider?.enabled ? claudeDesktopModels(provider, state.model, true).map(entry => metadata(entry.name, entry.labelOverride)) : [];
+      const data = provider?.enabled ? claudeDesktopModels(provider, state.model).map(entry => metadata(entry.name, entry.labelOverride)) : [];
       let id = '';
       try { id = decodeURIComponent(path.slice(desktopModelsPath.length + 1)); } catch { /* malformed ID returns 404 */ }
       let model = data.find(item => item.id === id);

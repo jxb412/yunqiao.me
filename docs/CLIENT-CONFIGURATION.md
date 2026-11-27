@@ -14,7 +14,7 @@ ChatGPT 桌面入口通过 `config.toml` 配置客户端使用的接口地址、
 
 向导显示本次实际使用的配置路径。Claude 桌面版另用系统对应的应用数据目录与 `Claude-3p/configLibrary`，不套用 Claude Code 路径；多目录有冲突时先确认位置。
 
-Claude 桌面版会在模型菜单中列出去重后的供应商模型，所选默认模型排在首位。升级前已接入的用户，请在“客户端接入”打开 Claude 桌面版的“更换配置”，同步模型、选择默认项、保存并重启 Claude，使新的模型菜单生效。供应商仅提供一个模型时，菜单只显示一项。旧会话中的 Sonnet、Opus 和 Haiku 网关别名仍按原连接转发。[Claude Desktop 官方模型配置](https://claude.com/docs/third-party/claude-desktop/models)
+Claude 桌面版的模型菜单按供应商的实际目录生成。云桥会保留兼容的 Claude 型号和带有真实型号的供应商路由，去掉重复项，并把所选默认模型排在首位。向导会说明有多少项未识别为 Claude 型号。升级前已接入的用户，请在“客户端接入”打开 Claude 桌面版的“更换配置”，同步模型、选择默认项、保存并重启 Claude。旧会话中的 Sonnet、Opus 和 Haiku 网关别名仍按原连接转发。[Claude Desktop 官方模型配置](https://claude.com/docs/third-party/claude-desktop/models)
 
 ## 配置流程
 

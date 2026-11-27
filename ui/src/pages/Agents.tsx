@@ -10,6 +10,7 @@ import ContextCompactHint from '../components/ContextCompactHint';
 import ClientConnectionOverview from '../components/ClientConnectionOverview';
 import { applyContextDefaults } from '../../../src/core/modelContext';
 import { nativeDirectParameters } from '../../../src/core/agents/directConnection';
+import { isClaudeDesktopModel } from '../../../src/core/agents/claudeDesktopModels';
 import type { PageProps } from '../App';
 import { Btn, Empty, Field, Ico, Modal, useToast } from '../components/ui';
 import { AgentCatalogItem, AgentDetection, CloudCatalog, Preset, Provider, PROTOCOL_TEXT, call, fmtCtx } from '../lib/api';
@@ -114,7 +115,13 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
   const support = agent.support;
   const toast = useToast();
   const provider = choices.find(p => p.id === providerId);
-  const chosenModel = manualModel ? model : model || provider?.models[0]?.id || '';
+  const desktopClaude = agent.id === 'claude-desktop';
+  const providerModels = provider?.models || [];
+  const availableModels = desktopClaude ? providerModels.filter(m => isClaudeDesktopModel(m.id)) : providerModels;
+  const excludedModels = providerModels.length - availableModels.length;
+  const catalogSelection = !desktopClaude || availableModels.some(m => m.id === model) ? model : '';
+  const chosenModel = manualModel ? model : catalogSelection || availableModels[0]?.id || '';
+  const modelIssue = desktopClaude && chosenModel && !isClaudeDesktopModel(chosenModel) ? 'Claude Desktop 需要包含 Claude 型号的模型 ID 或供应商路由。' : '';
   const selectedModel = provider?.models.find(m => m.id === chosenModel);
   const selectedContextWindow = selectedModel || providerId === 'official' ? selectedModel?.contextWindow
     : chosenModel ? applyContextDefaults<{ id: string; contextWindow?: number }>({ id: chosenModel }).contextWindow : undefined;
@@ -133,6 +140,8 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
     : state.settings.proxy?.trim() ? '云桥已设置网络代理，当前直连配置不会写入代理设置，请使用本地网关。'
     : directEndpointIssue;
   const connectionMode = directIssue ? 'gateway' : mode;
+  const desktopModelHint = 'Claude Desktop 的模型菜单会显示兼容的 Claude 型号，所选默认模型排在首位。'
+    + (excludedModels ? ` 供应商目录中另有 ${excludedModels} 项未识别为 Claude 型号。` : '');
   const canSetPermissions = codex || agent.id === 'claude-code';
   const payload = { agentId: agent.id, providerId, model: chosenModel, mode: connectionMode, authMode: selectedAuthMode, permissionMode: canSetPermissions ? permissionMode : 'preserve', skipOnboarding: agent.id === 'claude-code' && skipOnboarding };
   const historyPreview = codex ? preview?.history : undefined;
@@ -164,6 +173,7 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
     if (discovered?.ok === false) setError(`供应商已保存，模型列表暂未同步：${discovered.message || '请稍后重试'}。可继续选择已有模型或手动输入模型 ID。`);
   }
   async function ensureSelectedModel() {
+    if (modelIssue) throw new Error(modelIssue);
     if (providerId !== 'official' && provider && !provider.models.some(m => m.id === chosenModel)) {
       if (!window.aurora) throw new Error('请在电脑端先保存此模型 ID');
       await call('provider.save', { id: provider.id, models: [...provider.models, { id: chosenModel }] });
@@ -206,7 +216,7 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
   }
   if (support === 'unsupported' && !codingDesktop) return <Modal title={agent.name} sub="客户端兼容性说明" onClose={onClose} foot={<><Btn onClick={onClose}>关闭</Btn>{agent.docsUrl && <Btn variant="primary" onClick={() => call('app.openExternal', { url: agent.docsUrl })}>打开官方说明 ↗</Btn>}</>}><div className="compatibility-info"><ClientMark id={agent.id} name={agent.name} /><h2>通过官方账号使用此客户端</h2><p>{agent.supportNote || agent.description}</p><p>如需自定义供应商，可选择支持自定义 API 的编程客户端或 API 工具。</p></div></Modal>;
   return <Modal title={`配置 ${agent.name}`} sub="选择供应商和模型，预览后再应用到客户端。" onClose={() => { if (!busy && !clientActionActive) onClose(); }} width={800} foot={<div style={{ width: '100%', minWidth: 0 }}>
-    <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8 }}><Btn variant="ghost" disabled={busy || clientActionActive} onClick={onClose}>{result ? '完成' : '取消'}</Btn>{!result && step > 0 && <Btn disabled={busy} onClick={() => { setStep(step - 1); clearSelectionFeedback(); setError(''); }}>上一步</Btn>}{!result && step === 0 && <Btn variant="primary" disabled={busy || (!creating && !provider?.enabled)} onClick={() => run(async () => { if (creating) await saveNew(); else setStep(1); })}>{busy ? '保存中…' : creating ? '保存并选模型 →' : '下一步：选择模型 →'}</Btn>}{!result && step === 1 && <Btn variant="primary" disabled={busy || connectionTestActive || !chosenModel} onClick={() => run(prepare)}>{busy ? '生成预览…' : '预览配置 →'}</Btn>}{!result && step === 2 && support === 'automatic' && <Btn variant="primary" disabled={busy} onClick={() => run(apply)}>{busy ? '正在保存配置…' : '保存配置'}</Btn>}</div></div>}>
+    <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8 }}><Btn variant="ghost" disabled={busy || clientActionActive} onClick={onClose}>{result ? '完成' : '取消'}</Btn>{!result && step > 0 && <Btn disabled={busy} onClick={() => { setStep(step - 1); clearSelectionFeedback(); setError(''); }}>上一步</Btn>}{!result && step === 0 && <Btn variant="primary" disabled={busy || (!creating && !provider?.enabled)} onClick={() => run(async () => { if (creating) await saveNew(); else setStep(1); })}>{busy ? '保存中…' : creating ? '保存并选模型 →' : '下一步：选择模型 →'}</Btn>}{!result && step === 1 && <Btn variant="primary" disabled={busy || connectionTestActive || !chosenModel || !!modelIssue} onClick={() => run(prepare)}>{busy ? '生成预览…' : '预览配置 →'}</Btn>}{!result && step === 2 && support === 'automatic' && <Btn variant="primary" disabled={busy} onClick={() => run(apply)}>{busy ? '正在保存配置…' : '保存配置'}</Btn>}</div></div>}>
     <div className="wizard-steps">{['连接供应商', '选择模型', '预览并应用'].map((name, i) => <div key={name} className={step === i ? 'active' : step > i ? 'done' : ''}><span>{step > i ? '✓' : i + 1}</span>{name}</div>)}</div>
     {error && <div className="notice warning" role="alert">{error}</div>}
     <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
@@ -237,11 +247,12 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
       {step === 1 && <>
         {codingDesktop && <DesktopSetupRecovery agent={agent} detected={detected} platform={state.platform} busy={busy} operation={recoveryOperation} canPreview={!!chosenModel} onDetect={() => { void run(() => recoverDesktop('detect')); }} onSelect={() => { void run(() => recoverDesktop('select')); }} />}
         <div className="review-summary"><b>{provider?.name}</b><span className="chip">{PROTOCOL_TEXT[provider?.format || '']}</span><span className="grow" /><Btn size="sm" disabled={busy || providerId === 'official'} onClick={() => run(async () => { const r = await call('provider.models', { providerId }); if (!r.ok) throw new Error(r.message); await reload(); toast.push(`模型已同步，新增 ${r.added || 0} 个`, 'ok'); })}><Ico name="refresh" size={12} />同步模型</Btn></div>
-        <Field label={agent.id === 'claude-desktop' ? '选择默认模型' : '选择模型'} hint={agent.id === 'claude-desktop' ? '所选模型在 Claude Desktop 菜单中排在首位。保存配置并重启 Claude 后，可在菜单里切换这个供应商的其他模型。' : undefined}><select aria-label="选择模型" className="select" disabled={manualModel} value={chosenModel} onChange={e => { setModel(e.target.value); clearSelectionFeedback(); }}><option value="" disabled>请选择模型</option>{provider?.models.map(m => <option key={m.id} value={m.id}>{m.displayName || m.id}{agent.id === 'claude-desktop' && m.displayName && m.displayName !== m.id ? ` (${m.id})` : ''}{m.contextWindow ? ` · ${fmtCtx(m.contextWindow)} 上下文` : ''}</option>)}</select></Field>
+        <Field label={agent.id === 'claude-desktop' ? '选择默认模型' : '选择模型'} hint={agent.id === 'claude-desktop' ? desktopModelHint : undefined}><select aria-label="选择模型" className="select" disabled={manualModel} value={chosenModel} onChange={e => { setModel(e.target.value); clearSelectionFeedback(); }}><option value="" disabled>请选择模型</option>{availableModels.map(m => <option key={m.id} value={m.id}>{m.displayName || m.id}{agent.id === 'claude-desktop' && m.displayName && m.displayName !== m.id ? ` (${m.id})` : ''}{m.contextWindow ? ` · ${fmtCtx(m.contextWindow)} 上下文` : ''}</option>)}</select></Field>
         {codex && <div><ContextCompactHint value={selectedContextWindow} id="client-context-compact-hint" /><p className="hint">应用时按上下文的 90% 同步默认自动压缩阈值，重启客户端后生效。其他压缩策略与实际触发时机由客户端决定。</p></div>}
         {providerId !== 'official' && <>
-          {!!provider?.models.length && <Btn size="sm" onClick={() => { setManualModel(!manualModel); if (manualModel) setModel(provider.models[0]?.id || ''); clearSelectionFeedback(); }}>{manualModel ? '返回模型列表' : '手动输入其他模型 ID'}</Btn>}
-          {(manualModel || !provider?.models.length) && <Field label="手动模型 ID" hint="模型不在列表中时，填写供应商提供的准确 ID；预览前会保存到该供应商。"><input className="input mono" aria-label="手动模型 ID" value={model} onChange={e => { setModel(e.target.value.trim()); clearSelectionFeedback(); }} placeholder="填写该服务实际提供的模型 ID" /></Field>}
+          {!!availableModels.length && <Btn size="sm" onClick={() => { setManualModel(!manualModel); if (manualModel) setModel(availableModels[0]?.id || ''); clearSelectionFeedback(); }}>{manualModel ? '返回模型列表' : '手动输入其他模型 ID'}</Btn>}
+          {(manualModel || !availableModels.length) && <Field label="手动模型 ID" hint="模型不在列表中时，填写供应商提供的准确 ID；预览前会保存到该供应商。"><input className="input mono" aria-label="手动模型 ID" value={manualModel ? model : chosenModel} onChange={e => { setManualModel(true); setModel(e.target.value.trim()); clearSelectionFeedback(); }} placeholder="填写该服务实际提供的模型 ID" /></Field>}
+          {modelIssue && <p className="hint" role="alert">{modelIssue}</p>}
         </>}
         {chosenModel && <div className="model-feature-row">{Object.entries(provider?.models.find(m => m.id === chosenModel)?.capabilities || {}).filter(([, v]) => v).map(([k]) => <span className="chip" key={k}>{({ tools: '工具调用', vision: '视觉理解', thinking: '深度思考' } as any)[k] || k}</span>)}</div>}
         <Field label="接入方式" hint={directIssue || '协议一致时可直连；需要协议转换、多密钥轮换或网关统计时使用本地网关。'}><select className="select" aria-label="接入方式" value={connectionMode} onChange={e => { setMode(e.target.value as 'gateway' | 'direct'); clearSelectionFeedback(); }}><option value="gateway">本地网关（推荐）</option><option value="direct" disabled={!!directIssue}>直连供应商</option></select></Field>
@@ -268,7 +279,7 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
         {support === 'automatic' && <div className="notice"><Ico name="shield" size={17} /><span>应用前自动备份原配置。{preview.requiresRestart ? '完成后请重启客户端。' : '配置生效方式以客户端为准。'}</span></div>}
       </>}
     </>}
-    {!result && <div hidden={step !== 1}><ClientConnectionTests {...payload} disabled={busy || !chosenModel} selectionRevision={testRevision} prepare={ensureSelectedModel} onActiveChange={setConnectionTestActive} /></div>}
+    {!result && <div hidden={step !== 1}><ClientConnectionTests {...payload} disabled={busy || !chosenModel || !!modelIssue} selectionRevision={testRevision} prepare={ensureSelectedModel} onActiveChange={setConnectionTestActive} /></div>}
     </fieldset>
     {result && <div className="client-restart-success"><h3>{agent.category === 'cli' ? '打开新终端，加载新配置' : '最后一步：重新启动客户端'}</h3><p className="hint">{connectionMode === 'gateway' ? '使用期间保持云桥运行。' : '直连供应商，加载配置后无需保持云桥运行。'}{'保存工作后重新启动客户端，即可加载新配置。'}</p><div className="client-tools"><ClientRestart agent={agent} primary onActiveChange={setClientActionActive} /><ClientDiagnostics agent={agent} /><ClientPermissions agent={agent} onActiveChange={setClientActionActive} onRestored={async () => { setPermissionMode('preserve'); await reload(); }} /></div></div>}
   </Modal>;
