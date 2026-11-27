@@ -230,6 +230,46 @@ export async function testProvider(deps: ActionDeps, payload: { providerId: stri
   }
 }
 
+async function readProviderModelPages(endpoint: string, format: Provider['format'], headers: Record<string, string>, proxy?: string):
+  Promise<{ records: any[] } | { error: string } | undefined> {
+  const url = new URL(endpoint);
+  const cursors = new Set<string>();
+  const records: any[] = [];
+  const signal = AbortSignal.timeout(60_000);
+  let bytes = 0;
+  for (let page = 1; page <= 100; page++) {
+    let json;
+    try {
+      const res = await openUpstream(url.href, { method: 'GET', headers, proxy, timeoutMs: 15000, signal });
+      const text = await readAll(res.stream, 4 * 1024 * 1024);
+      if (res.status >= 200 && res.status < 300) json = JSON.parse(text);
+      bytes += Buffer.byteLength(text);
+    } catch { /* Try the alternate models path only when the first page is unavailable. */ }
+    const list = json?.data ?? json?.models;
+    if (!Array.isArray(list) || json.error) {
+      return page === 1 ? undefined : { error: `模型列表第 ${page} 页读取失败，已保留本地模型，请重试` };
+    }
+    if (records.length + list.length > 10000 || bytes > 16 * 1024 * 1024) {
+      return { error: '模型列表超过同步大小上限，已保留本地模型' };
+    }
+    records.push(...list);
+    let cursor;
+    if (format === 'gemini') {
+      cursor = json.nextPageToken;
+      if (cursor == null || cursor === '') return { records };
+    } else if (format === 'anthropic') {
+      if (json.has_more == null || json.has_more === false) return { records };
+      cursor = json.has_more === true ? json.last_id : undefined;
+    } else return { records };
+    if (typeof cursor !== 'string' || !cursor.trim() || cursors.has(cursor)) {
+      return { error: '模型列表分页游标无效或重复，已保留本地模型' };
+    }
+    cursors.add(cursor);
+    url.searchParams.set(format === 'gemini' ? 'pageToken' : 'after_id', cursor);
+  }
+  return { error: '模型列表超过 100 页仍未读完，已保留本地模型' };
+}
+
 export async function fetchProviderModels(deps: ActionDeps, payload: { providerId: string }) {
   const p = deps.store.getProvider(payload.providerId);
   if (!p) return { ok: false, models: [], message: '供应商已不存在，请刷新列表' };
@@ -249,22 +289,22 @@ export async function fetchProviderModels(deps: ActionDeps, payload: { providerI
     : { authorization: `Bearer ${key?.key || ''}` };
   for (const url of urls) {
     try {
-      const res = await openUpstream(url, {
-        method: 'GET',
-        headers: { ...headers, ...(p.headers || {}) },
-        proxy: p.proxy || deps.store.getSettings().proxy || undefined,
-        timeoutMs: 15000,
-      });
-      const text = await readAll(res.stream, 4 * 1024 * 1024);
-      if (res.status < 200 || res.status >= 300) continue;
-      const json = JSON.parse(text);
-      const list: any[] = json?.data ?? json?.models ?? [];
-      if (!Array.isArray(list) || json.error) continue;
-      const models = list.slice(0, 10000).flatMap((x: any) => {
+      const catalog = await readProviderModelPages(url, p.format, { ...headers, ...p.headers }, p.proxy || deps.store.getSettings().proxy || undefined);
+      if (!catalog) continue;
+      if ('error' in catalog) return { ok: false, models: deps.store.getProvider(p.id)?.models || [], message: catalog.error };
+      const list = catalog.records;
+      const nonChatEndpoints = new Set(['image-generation', 'openai-video', 'embeddings', 'jina-rerank']);
+      let skippedNonChat = false;
+      const models = list.flatMap((x: any) => {
         const rawId = x?.id ?? x?.name;
         if (typeof rawId !== 'string') return [];
         const id = rawId.replace(/^models\//, '').trim();
         if (!id || id.length > 512 || /[\s\u0000-\u001f]/.test(id)) return [];
+        // New API lists the primary endpoint first, including for image generators that also expose a chat facade.
+        if (Array.isArray(x.supported_endpoint_types) && nonChatEndpoints.has(x.supported_endpoint_types[0])) {
+          skippedNonChat = true;
+          return [];
+        }
         const context = x.context_window ?? x.input_token_limit ?? x.inputTokenLimit;
         const thinking = [x.capabilities?.thinking, x.capabilities?.reasoning, x.reasoning].find(value => typeof value === 'boolean');
         const explicitVision = [x.capabilities?.vision, x.vision, x.supports_vision].find(value => typeof value === 'boolean');
@@ -275,15 +315,17 @@ export async function fetchProviderModels(deps: ActionDeps, payload: { providerI
         return [{ id, ...(isValidContextWindow(context) ? { contextWindow: context } : {}),
           ...(Object.keys(capabilities).length ? { capabilities } : {}) }];
       });
-      if (models.length) {
+      if (models.length || skippedNonChat) {
         // A network response must not restore a deleted provider or overwrite edits made while it was loading.
         const current = deps.store.getProvider(p.id);
         if (!current) return { ok: false, models: [], message: '供应商已删除，本次同步结果已丢弃' };
         if (connection(current) !== startedConnection) return { ok: false, models: current.models, message: '供应商连接配置已变化，请重新同步模型' };
+        if (!models.length) return { ok: false, models: current.models, message: '供应商返回的列表中没有可同步的对话模型' };
         const merged = [...current.models];
+        const modelIndex = new Map(merged.map((model, index) => [model.id, index]));
         for (const m of models) {
-          const index = merged.findIndex(x => x.id === m.id);
-          if (index >= 0) {
+          const index = modelIndex.get(m.id);
+          if (index !== undefined) {
             // Existing explicit limits are local choices; synchronization never replaces them.
             if (merged[index].contextWindow === undefined && isChatgptTextModel(m.id)) merged[index] = applyContextDefaults({ ...merged[index], contextWindow: m.contextWindow });
             for (const capability of ['thinking', 'vision'] as const) {
@@ -291,7 +333,10 @@ export async function fetchProviderModels(deps: ActionDeps, payload: { providerI
                 merged[index] = { ...merged[index], capabilities: { ...merged[index].capabilities, [capability]: m.capabilities[capability] } };
               }
             }
-          } else if (!(startedModels.has(m.id) && !current.models.some(x => x.id === m.id))) merged.push(applyContextDefaults(m));
+          } else if (!startedModels.has(m.id)) {
+            modelIndex.set(m.id, merged.length);
+            merged.push(applyContextDefaults(m));
+          }
         }
         let savedModels = merged;
         try { if (merged.length !== current.models.length || merged.some((model, index) => model !== current.models[index])) savedModels = deps.store.saveProvider({ ...current, models: merged }).models; }

@@ -152,6 +152,7 @@ export interface ChatEncodeOptions {
 
 export function encodeOpenAIChatRequest(ir: IRRequest, opt: ChatEncodeOptions): any {
   const messages: any[] = [];
+  const translatedCallIds = new Map<string, string>();
   if (ir.system) messages.push({ role: 'system', content: ir.system });
 
   for (const m of ir.messages) {
@@ -162,12 +163,15 @@ export function encodeOpenAIChatRequest(ir: IRRequest, opt: ChatEncodeOptions): 
       for (const b of m.blocks) {
         if (b.type === 'text') textParts.push(b.text);
         else if (b.type === 'thinking') reasoning = (reasoning ? reasoning + '\n' : '') + b.text;
-        else if (b.type === 'tool_use')
+        else if (b.type === 'tool_use') {
+          const id = b.id?.startsWith('call_') ? b.id : openaiToolCallId();
+          if (b.id && id !== b.id) translatedCallIds.set(b.id, id);
           toolCalls.push({
-            id: b.id?.startsWith('call_') ? b.id : openaiToolCallId(),
+            id,
             type: 'function',
             function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
           });
+        }
       }
       const msg: any = { role: 'assistant', content: textParts.join('') || null };
       if (toolCalls.length) msg.tool_calls = toolCalls;
@@ -182,9 +186,10 @@ export function encodeOpenAIChatRequest(ir: IRRequest, opt: ChatEncodeOptions): 
       if (b.type === 'tool_result') {
         toolMsgs.push({
           role: 'tool',
-          tool_call_id: b.toolUseId,
+          tool_call_id: translatedCallIds.get(b.toolUseId) ?? b.toolUseId,
           content: blocksToText(b.content) || '(no output)',
         });
+        translatedCallIds.delete(b.toolUseId);
       } else if (b.type === 'text') {
         parts.push({ type: 'text', text: b.text });
       } else if (b.type === 'image') {

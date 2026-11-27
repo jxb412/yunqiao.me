@@ -85,6 +85,31 @@ try {
       assert.equal(result.ok, false); assert.match(result.message, /本地保存失败/); assert.equal(current.models.length, 2);
     });
   } finally { store.saveProvider = original; }
+  await check('Discovery skips explicit non-chat primary endpoints and keeps unclassified or vision-capable chat models', () => {}, (result, current) => {
+    assert.equal(result.ok, true);
+    assert.deepEqual(current.models.map(model => model.id), ['existing', 'remove-me', 'vision-chat', 'unlabelled', 'unknown-type', 'wrong-shape', 'empty-types']);
+    assert.equal(current.models[0].inputPrice, 2);
+    assert.equal(current.models[0].capabilities, undefined);
+    assert.equal(current.models[2].capabilities.vision, true);
+  }, { data: [
+    { id: 'existing', supported_endpoint_types: ['image-generation'], vision: true },
+    { id: 'gemini-nano-banana', supported_endpoint_types: ['image-generation', 'openai'] },
+    { id: 'seedance', supported_endpoint_types: ['openai-video'] },
+    { id: 'vectors', supported_endpoint_types: ['embeddings'] },
+    { id: 'ranker', supported_endpoint_types: ['jina-rerank'] },
+    { id: 'vision-chat', supported_endpoint_types: ['openai', 'image-generation'], vision: true },
+    { id: 'unlabelled' }, { id: 'unknown-type', supported_endpoint_types: ['future-protocol'] },
+    { id: 'wrong-shape', supported_endpoint_types: 'embeddings' }, { id: 'empty-types', supported_endpoint_types: [] },
+  ] });
+  await check('A non-chat-only list reports the reason and preserves concurrent edits', p => store.saveProvider({
+    ...p, models: [{ id: 'existing', displayName: 'Manually edited' }],
+  }), (result, current) => {
+    assert.equal(result.ok, false);
+    assert.match(result.message, /对话模型/);
+    assert.deepEqual(result.models, current.models);
+    assert.deepEqual(current.models.map(model => model.id), ['existing']);
+    assert.equal(current.models[0].displayName, 'Manually edited');
+  }, { data: [{ id: 'seedance', supported_endpoint_types: ['openai-video'] }] });
   assert.equal(requests, passed);
   const observed = [];
   const destination = http.createServer((request, response) => {
@@ -117,6 +142,68 @@ try {
     assert(!JSON.stringify(observed.at(-1)).includes('old-')); assert.equal(observed.length, 3);
     passed += 3; console.log('PASS origin isolation for full drafts, partial saves and explicit replacement credentials');
   } finally { destination.closeAllConnections(); await new Promise(resolve => destination.close(resolve)); }
+  async function checkPages(format, pageResponse, verify) {
+    const pages = [];
+    const upstream = http.createServer((request, response) => {
+      const url = new URL(request.url, 'http://localhost');
+      pages.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), headers: request.headers });
+      const { body, status = 200 } = pageResponse(pages.length);
+      response.writeHead(status, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(body));
+    });
+    await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    try {
+      const provider = store.saveProvider({ name: 'paged catalog', format,
+        baseUrl: `http://127.0.0.1:${upstream.address().port}/relay`, models: [{ id: 'kept', inputPrice: 3 }],
+        apiKeys: [{ id: 'fixture', key: 'paging-fixture', label: '', enabled: true, weight: 1 }] });
+      const result = await fetchProviderModels({ store }, { providerId: provider.id });
+      verify({ result, pages, saved: store.getProvider(provider.id).models });
+      passed++;
+    } finally { upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); }
+  }
+  const token = 'opaque/+&=?%';
+  await checkPages('gemini', page => ({ body: page === 1 ? { models: [], nextPageToken: token }
+    : { models: [{ name: 'models/gemini-page-two', inputTokenLimit: 48000 }, { name: 'models/kept' }] } }), ({ result, pages, saved }) => {
+    assert.equal(result.ok, true); assert.equal(result.added, 1);
+    assert.deepEqual(saved.map(m => m.id), ['kept', 'gemini-page-two']); assert.equal(saved[0].inputPrice, 3);
+    assert.equal(saved[1].contextWindow, 48000); assert.deepEqual(pages.map(p => p.query), [{}, { pageToken: token }]);
+    assert(pages.every(p => p.path === '/relay/v1beta/models' && p.headers['x-goog-api-key'] === 'paging-fixture'));
+  });
+  await checkPages('anthropic', page => ({ body: page === 1 ? { data: [{ id: 'claude-first' }], has_more: true, last_id: token }
+    : { data: [{ id: 'claude-first' }, { id: 'claude-second' }], has_more: false, last_id: 'unused' } }), ({ result, pages, saved }) => {
+    assert.equal(result.ok, true); assert.equal(result.added, 2); assert.deepEqual(saved.map(m => m.id), ['kept', 'claude-first', 'claude-second']);
+    assert.deepEqual(pages.map(p => p.query), [{}, { after_id: token }]);
+    assert(pages.every(p => p.path === '/relay/v1/models' && p.headers['x-api-key'] === 'paging-fixture'));
+  });
+  function incomplete({ result, saved }) {
+    assert.equal(result.ok, false); assert.match(result.message, /模型列表/); assert.deepEqual(saved, [{ id: 'kept', inputPrice: 3 }]); assert.deepEqual(result.models, saved);
+  }
+  await checkPages('gemini', page => ({ body: { models: [{ name: 'models/partial' }], nextPageToken: String(page % 2) } }), context => {
+    incomplete(context); assert.equal(context.pages.length, 3);
+  });
+  await checkPages('anthropic', page => page === 1 ? { body: { data: [{ id: 'partial' }], has_more: true, last_id: 'next' } }
+    : { status: 503, body: { error: 'unavailable' } }, context => {
+    incomplete(context); assert.equal(context.pages.length, 2); assert.match(context.result.message, /2/);
+  });
+  await checkPages('anthropic', () => ({ body: { data: [{ id: 'partial' }], has_more: true } }), context => {
+    incomplete(context); assert.equal(context.pages.length, 1);
+  });
+  await checkPages('anthropic', () => ({ body: { data: [{ id: 'partial' }], has_more: 'true', last_id: 'invalid' } }), context => {
+    incomplete(context); assert.equal(context.pages.length, 1);
+  });
+  await checkPages('gemini', page => ({ body: page === 1 ? { models: Array(10000).fill({ name: 'models/partial' }), nextPageToken: 'next' }
+    : { models: [{ name: 'models/overflow' }] } }), context => {
+    incomplete(context); assert.equal(context.pages.length, 2);
+  });
+  for (const complete of [false, true]) {
+    await checkPages('gemini', page => ({ body: { models: [{ name: 'models/page-' + page }],
+      nextPageToken: complete && page === 100 ? '' : String(page) } }), context => {
+      assert.equal(context.pages.length, 100);
+      if (complete) { assert.equal(context.result.ok, true); assert.equal(context.result.added, 100); }
+      else incomplete(context);
+    });
+  }
+  console.log('PASS Gemini and Anthropic catalog pagination, escaping, atomic failure and final-page bounds');
   console.log(`Model synchronization: ${passed} checks passed.`);
 } finally {
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

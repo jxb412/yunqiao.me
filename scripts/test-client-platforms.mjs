@@ -41,6 +41,11 @@ try {
       assert(!api.cliCandidates('codex', { ...ctx, isolated: true }).includes('/opt/homebrew/bin/codex'));
     });
   }
+  check('ZCode desktop candidates match its native releases and exclude the Linux CLI', () => {
+    const environment = {};
+    assert(api.desktopCandidates(['ZCode'], { platform: 'darwin', home: '/Users/a', environment }).includes('/Applications/ZCode.app'));
+    assert.deepEqual(api.desktopCandidates(['ZCode'], { platform: 'linux', home: '/home/a', environment }), []);
+  });
   check('Finder PATH fallback includes native, Homebrew and configured npm/nvm installations', () => {
     const candidates = api.cliCandidates('claude', { platform: 'darwin', home: '/Users/a', environment: { PATH: '/usr/bin:/bin', npm_config_prefix: '/Users/a/npm custom', HOMEBREW_PREFIX: '/opt/custom-brew', NVM_BIN: '/Users/a/.nvm/versions/node/v22.0.0/bin' } });
     for (const prefix of ['/Users/a/.local/bin', '/Users/a/.npm-global/bin', '/Users/a/.volta/bin', '/opt/homebrew/bin', '/usr/local/bin', '/Users/a/npm custom/bin', '/opt/custom-brew/bin', '/Users/a/.nvm/versions/node/v22.0.0/bin']) assert(candidates.includes(`${prefix}/claude`));
@@ -104,6 +109,20 @@ try {
       fs.chmodSync(executable, 0o700);
     }
     assert.equal(api.getAdapter('codex-cli').detect().command, executable);
+  });
+  if (['win32', 'darwin'].includes(process.platform)) check('ZCode desktop and CLI are discovered independently', () => {
+    const desktop = api.getAdapter('zcode-desktop'), cli = api.getAdapter('zcode');
+    assert.equal(desktop.category, 'desktop');
+    assert.equal(cli.category, 'cli');
+    assert.equal(desktop.detect().installed, false);
+    const file = process.platform === 'win32' ? path.join(scratch, 'AppData', 'Local', 'Programs', 'ZCode', 'ZCode.exe') : path.join(scratch, 'Applications', 'ZCode.app');
+    if (process.platform === 'win32') write(file); else fs.mkdirSync(file, { recursive: true });
+    assert.equal(desktop.detect().command, file);
+    assert.equal(cli.detect().installed, false);
+    const shim = path.join(scratch, 'bin', process.platform === 'win32' ? 'zcode.cmd' : 'zcode');
+    write(shim); fs.chmodSync(shim, 0o700);
+    assert.equal(cli.detect().command, shim);
+    assert.equal(desktop.detect().command, file);
   });
   for (const name of process.platform === 'win32' ? ['CodeBuddy CN', 'CodeBuddy'] : ['CodeBuddy']) check(`native ${process.platform} ${name} installation is detected`, () => {
     const candidate = process.platform === 'darwin' ? path.join(scratch, 'Applications', name + '.app')

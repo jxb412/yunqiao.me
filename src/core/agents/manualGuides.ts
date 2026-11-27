@@ -116,6 +116,14 @@ export function buildManualGuide(input: ManualGuideInput, apiKey = MANUAL_TOKEN_
     guide.notices.push('yunqiao/current 是 OpenCode 内的选择名称；配置里的实际模型 ID 保留完整供应商前缀。V1 与 V2 字段不能混用。');
     guide.command = { label: '启动命令', content: 'opencode' };
     guide.docs = [{ label: 'OpenCode 官方供应商说明', url: 'https://opencode.ai/docs/providers/' }, { label: '配置文件位置', url: 'https://opencode.ai/docs/config/' }];
+  } else if (input.agentId === 'zcode-desktop') {
+    guide.title = 'ZCode 桌面版 · 自定义供应商';
+    guide.steps = [
+      '在 ZCode 中打开「设置」→「模型设置」→「添加供应商」→「创建自定义供应商」，为新供应商命名。',
+      'API 格式选择 Chat Completions (/chat/completions)，将下方 API 基础地址填入 Base URL，并填写 API Key。',
+      '点击「添加模型」，将完整模型 ID 填入「模型 ID」。保存后，在 ZCode 对话中选中这个供应商和模型，发送一条消息验证。',
+    ];
+    guide.docs = [{ label: 'ZCode 官方文档', url: 'https://zcode.z.ai/cn/docs' }];
   } else if (input.agentId === 'qwen-code') {
     guide.title = 'Qwen Code · 自定义模型';
     guide.path = homePath(input.platform, '.qwen/settings.json');

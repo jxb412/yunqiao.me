@@ -1,5 +1,25 @@
 # 三个参考项目与真实用户需求调研
 
+## 2026-11-28 更新
+
+以 11 月 26 日记录为基线，按北京时间核对正式发布、默认分支提交和近期用户反馈。三个仓库中只有 cc-switch 开启了 GitHub Discussions，另两个项目的反馈取自 Issues 与评论。
+
+### cc-switch
+
+- v4.0.43 修复 OpenCode 2.4 历史只显示提问的问题。v4.0.44 新增 ZCode 桌面接入，并按 New API 返回的主接口类型过滤非对话模型。云桥先前会把纯生成图片、视频、向量和重排模型一起导入对话列表，本轮修复了这个问题，保留已有选择和可读图的对话模型。[v4.0.43](https://github.com/farion1231/cc-switch/releases/tag/v4.0.43) · [v4.0.44](https://github.com/farion1231/cc-switch/releases/tag/v4.0.44) · [模型筛选反馈和发布确认](https://github.com/farion1231/cc-switch/issues/10026#issuecomment-7222905824)
+- 云桥新增 ZCode 桌面入口并保留原 CLI 入口。在 Windows 本机识别到 ZCode 4.0.0。接入指南按 ZCode 的原生界面填写 API 格式、基础地址、密钥和完整模型 ID，由用户在 ZCode 选用。上游另有个人供应商文件写入、MCP 和会话管理功能。[cc-switch ZCode 接入](https://github.com/farion1231/cc-switch/pull/9824) · [ZCode 4.0 官方界面文案](https://github.com/zai-org/ZCode/blob/v4.0.0/packages/ui/src/i18n/locales/zh-CN.ts#L4295-L4315) · [ZCode 4.0 实际请求路径测试](https://github.com/zai-org/ZCode/blob/v4.0.0/apps/zcode-cli/packages/adapters/tests/connectivity-probe-wire.test.ts#L84-L92)
+- Discussion #9692 的回复描述了旧会话里的 MCP 历史被新供应商拒绝。Issue #10057 希望重启后仍能看到上次的额度与套餐快照，核对时仍开放。另用临时 SQLite 样本确认，云桥历史页尚未接入 OpenCode 的数据库会话源，2.4 的分段消息读取仍待适配。[MCP 续聊讨论](https://github.com/farion1231/cc-switch/discussions/9692#discussioncomment-19930014) · [额度快照需求](https://github.com/farion1231/cc-switch/issues/10057) · [OpenCode 2.4 修复确认](https://github.com/farion1231/cc-switch/issues/9982#issuecomment-7196521648)
+
+### CodexPlusPlus
+
+- 最新正式版仍为 v2.8.0。11 月 27–28 日的主分支提交整合供应商列表、加入 Gemini 上游、拆开 Claude Code 与 Claude Desktop，并改进 Chat 被过滤或截断时的结束状态。Antigravity 接入与用量快照是仍在讨论的需求。[v2.8.0](https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v2.8.0) · [供应商与客户端更新](https://github.com/BigPizzaV3/CodexPlusPlus/commit/cb798384adbe15646b8f75003b131dcf124bd536) · [Chat 结束状态修复](https://github.com/BigPizzaV3/CodexPlusPlus/commit/3bb428b5b5e8f5eabe8338435322ceba99b322fa) · [Antigravity 需求](https://github.com/BigPizzaV3/CodexPlusPlus/issues/3312) · [用量快照需求](https://github.com/BigPizzaV3/CodexPlusPlus/issues/3306)
+- #3289 报告工具历史被上游拒绝。云桥独立复现了一个成因明确的故障：从 Responses 或 Anthropic 转成 Chat Completions 时，工具调用的 ID 被改写，结果仍引用旧 ID。本轮在同一请求内配对两者，严格校验的模拟上游可接受并行工具逆序返回。该反馈未给出足够信息确认其自身故障的根因。[用户反馈及追问](https://github.com/BigPizzaV3/CodexPlusPlus/issues/3289#issuecomment-7179427306) · [上游历史处理提交](https://github.com/BigPizzaV3/CodexPlusPlus/commit/77c84298a0b65b314760e21cc184fc36c821754a)
+
+### magpie
+
+- 核对时正式版为 v0.1.4984。近期版本增加了通过 CLI 开关局域网共享，修复 WorkBuddy 推理签名回传，也修复了进程运行中新增账号后目录缺少该账号模型的问题。[v0.1.4984](https://github.com/yetone/magpie/releases/tag/v0.1.4984) · [局域网 CLI](https://github.com/yetone/magpie/releases/tag/v0.1.4983) · [WorkBuddy 修复](https://github.com/yetone/magpie/releases/tag/v0.1.4982) · [账号模型目录的修复确认](https://github.com/yetone/magpie/issues/7945#issuecomment-7219462676)
+- 开放的 #8030 指出 Gemini 模型目录触及分页上限仍可能显示同步成功。云桥此前只取第一页。本轮支持 Gemini 的 `nextPageToken` 和 Anthropic 的 `has_more` / `last_id`；完整读取后才合并模型，续页错误、游标异常或超出上限会保留原目录。测试使用本机 HTTP 模拟供应商，包含空页续读、第二页失败和第 100 页恰好结束的情况。[Gemini 分页反馈](https://github.com/yetone/magpie/issues/8030)
+
 ## 2026-11-26 更新
 
 本轮对照 11 月 15 日的调研和云桥 0.6.12 工作树，核对了三个项目的 Releases、提交、Issues 与可访问的社区讨论。日期按北京时间。cc-switch 开启了 GitHub Discussions，CodexPlusPlus 和 magpie 在核对时均未开启，该两项的用户反馈取自 Issues。

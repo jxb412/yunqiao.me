@@ -19,6 +19,14 @@ check('WorkBuddy uses a verified visual custom-provider flow and complete Chat U
   assert(manualGuideParameters(g).includes(placeholder));
   for (const url of ['http://localhost:3425/v1/', 'http://localhost:3425/v1/chat/completions', 'http://localhost:3425/v1/chat/completions/']) assert.equal(manualChatEndpoint(url), 'http://localhost:3425/v1/chat/completions');
 });
+check('ZCode desktop exposes its native Chat Completions fields and retains the routed model ID', () => {
+  const g = make('zcode-desktop');
+  assert.deepEqual(g.fields.map(field => field.value), [base.parameters.baseUrl, base.parameters.model, placeholder]);
+  assert(g.steps.some(step => step.includes('创建自定义供应商')));
+  assert(g.steps.some(step => step.includes('Chat Completions (/chat/completions)')));
+  assert.equal(g.document, undefined);
+  assert.equal(g.command, undefined);
+});
 check('CodeBuddy variants preserve exact model routing, paths, and optional capabilities', () => {
   for (const variant of ['codebuddy-cli', 'codebuddy-ide']) {
     const g = make('workbuddy', { variant }), config = JSON.parse(g.document.content);

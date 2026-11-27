@@ -48,10 +48,12 @@ export function cliCandidates(command: string, ctx: ClientPathContext): string[]
 }
 
 export function desktopCandidates(names: readonly string[], ctx: ClientPathContext): string[] {
+  // ZCode publishes desktop installers for Windows and macOS. Its Unix CLI is a separate client.
+  const desktopNames = ['win32', 'darwin'].includes(ctx.platform) ? names : names.filter(name => name !== 'ZCode');
   const paths = ctx.platform === 'win32' ? path.win32 : path.posix;
   const local = !ctx.isolated && environmentValue(ctx, 'LOCALAPPDATA') || paths.join(ctx.home, 'AppData', 'Local');
   const roaming = !ctx.isolated && environmentValue(ctx, 'APPDATA') || paths.join(ctx.home, 'AppData', 'Roaming');
-  return names.flatMap(name => ctx.platform === 'win32' ? [
+  return desktopNames.flatMap(name => ctx.platform === 'win32' ? [
     paths.join(local, 'Programs', name, `${name}.exe`), paths.join(local, name, `${name}.exe`),
     ...(name.toLowerCase() === 'claude' ? [paths.join(local, 'AnthropicClaude', 'claude.exe')] : []),
     paths.join(local, 'OpenAI', name, `${name}.exe`), paths.join(local, 'Microsoft', 'WindowsApps', `${name}.exe`),

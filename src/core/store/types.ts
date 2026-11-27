@@ -100,6 +100,7 @@ export type AgentId =
   | 'kimi-code'
   | 'opencode'
   | 'zcode'
+  | 'zcode-desktop'
   | 'antigravity'
   | 'generic';
 

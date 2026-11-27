@@ -52,6 +52,7 @@ ChatGPT / Codex 的配置结果与历史状态分开显示。配置先保存，�
 | Codex CLI | 自动配置 API、模型和上下文，可使用官方账号共存模式 |
 | ChatGPT 桌面版 / 原 Codex 桌面版 | 支持 Codex 编程配置的版本可配置第三方模型；桌面插件按版本检测兼容性 |
 | Gemini CLI | 自动配置 Gemini 接口和模型 |
+| ZCode 桌面版 | 识别 Windows 或 macOS 安装位置，在 ZCode 的自定义供应商界面手动填写连接参数并选用模型 |
 | WorkBuddy / CodeBuddy | WorkBuddy 提供自定义模型界面步骤，CodeBuddy CLI / IDE 提供独立配置示例 |
 | Kimi、OpenCode、Qwen Code | 提供对应协议、配置文件与启动步骤；OpenCode 区分 V1 / V2，Kimi 核对实际上下文容量 |
 | DeepSeek API 与其他兼容客户端 | 生成标准连接参数，需在支持自定义 API 的应用中手动填写 |

@@ -51,6 +51,17 @@ const upstream = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: { message: 'Rejected mock-bad-key' } }));
     return;
   }
+  if (body.model === 'tool-history') {
+    const calls = body.messages.find(message => message.tool_calls)?.tool_calls || [];
+    const outputs = body.messages.filter(message => message.role === 'tool');
+    const byId = new Map(outputs.map(output => [output.tool_call_id, output.content]));
+    if (calls.length !== 2 || outputs.length !== 2 || byId.size !== 2 ||
+        !calls.every(call => byId.get(call.id) === call.function.name)) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Tool results must match their corresponding tool call IDs' } }));
+      return;
+    }
+  }
   if (req.url === '/v1/responses') {
     const nativeResponse = { id: 'resp-native', status: 'completed', model: body.model,
       output: [{ id: 'ctc-native', type: 'custom_tool_call', call_id: 'call-native', name: 'apply_patch', input: '*** Begin Patch' },
@@ -91,7 +102,7 @@ store.providers.write([]);
 store.saveSettings({ gatewayToken: 'test-gateway-secret', maskSecrets: true, logRequests: true, maxRetries: 3 });
 const provider = store.saveProvider({ name: 'Mock', baseUrl: upstreamUrl + '/v1', format: 'openai-chat', enabled: true,
   apiKeys: [{ id: 'bad', label: 'bad', key: 'mock-bad-key', enabled: true, weight: 1 }, { id: 'good', label: 'good', key: 'mock-good-key', enabled: true, weight: 1 }],
-  models: [{ id: 'test-model', capabilities: { tools: true } }, { id: 'truncated-model' }] });
+  models: [{ id: 'test-model', capabilities: { tools: true } }, { id: 'truncated-model' }, { id: 'tool-history' }] });
 const gateway = new GatewayServer({ store, actions: async (action, payload) => {
   if (action === 'state.get') return { settings: store.getSettings(), providers: store.listProviders(), plugins: [{ code: 'secret source' }] };
   if (action === 'cloud.catalog') return { ok: true, ...catalog };
@@ -154,6 +165,34 @@ try {
     assert.equal(response.status, 200); assert.equal(requests[0].key, 'Bearer mock-bad-key'); assert.equal(requests[1].key, 'Bearer mock-good-key');
   });
   check('chat response contains Chinese without corruption', () => assert.equal(first.choices[0].message.content, '中文片段🌏'));
+  const histories = [
+    ['/v1/responses', { input: [
+      { type: 'function_call', call_id: 'exec_command:51', name: 'first', arguments: '{}' },
+      { type: 'function_call', call_id: 'call_existing', name: 'second', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_existing', output: 'second' },
+      { type: 'function_call_output', call_id: 'exec_command:51', output: 'first' },
+    ] }],
+    ['/v1/messages', { max_tokens: 64, messages: [
+      { role: 'assistant', content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'first', input: {} },
+        { type: 'tool_use', id: 'toolu_2', name: 'second', input: {} },
+      ] },
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'toolu_2', content: 'second' },
+        { type: 'tool_result', tool_use_id: 'toolu_1', content: 'first' },
+      ] },
+    ] }],
+  ];
+  for (const [endpoint, history] of histories) {
+    response = await post(endpoint, { model: 'tool-history', ...history });
+    const reply = await response.text();
+    check(`Chat upstream accepts paired parallel tool results from ${endpoint}`, () => {
+      assert.equal(response.status, 200, reply);
+      const calls = requests.at(-1).body.messages[0].tool_calls;
+      assert(calls.every(call => call.id.startsWith('call_')));
+      if (endpoint === '/v1/responses') assert.equal(calls[1].id, 'call_existing');
+    });
+  }
   const router = new Router(store);
   check('cooling keys are not used again', () => assert.ok(router.resolveModel(`${provider.id}/test-model`).candidates.every((c) => c.key.id !== 'bad')));
   store.saveProvider({ id: provider.id, enabled: false });
