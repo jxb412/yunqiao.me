@@ -286,12 +286,12 @@ window.renderAgents();"""
             assert last_payload('agent.preview')['agentId'] == 'claude-desktop'
             dialog.get_by_role('button', name='上一步', exact=True).click()
             dialog.get_by_role('combobox', name='选择模型', exact=True).select_option('custom-model')
-            expect(dialog.get_by_role('combobox', name='接入方式', exact=True)).to_have_value('gateway')
-            expect(dialog.locator('option[value="direct"]')).to_be_disabled()
-            expect(dialog.get_by_text('Claude 桌面直连需要 Claude 角色模型', exact=False)).to_be_visible()
+            expect(dialog.get_by_role('combobox', name='接入方式', exact=True)).to_have_value('direct')
+            expect(dialog.locator('option[value="direct"]')).to_be_enabled()
             dialog.get_by_role('button', name='预览配置 →', exact=True).click()
-            assert last_payload('agent.preview')['mode'] == 'gateway'
-            passed('Claude Desktop accepts recognizable role models for direct mode and returns to gateway for arbitrary model mapping')
+            assert last_payload('agent.preview')['mode'] == 'direct'
+            assert last_payload('agent.preview')['model'] == 'custom-model'
+            passed('Claude Desktop direct mode supports custom IDs from an Anthropic-compatible provider')
 
             dialog = open_wizard(setup="window.state.detected['chatgpt-desktop'].configured=false;window.state.codexCoexist.identity.available=true;window.state.codexCoexist.models=[{official:true,upstreamModel:'gpt-official',displayName:'官方模型'}]")
             dialog.get_by_role('button', name='上一步', exact=True).click()

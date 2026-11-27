@@ -65,7 +65,7 @@ function input(value: unknown): string { return `$inputData = [Text.Encoding]::U
 function script(source: string, data: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
     execFile(powershell(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded("$ErrorActionPreference='Stop'\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\n" + input(data) + source)],
-      { windowsHide: true, timeout: 15000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' }, (error, stdout) => {
+      { windowsHide: true, timeout: 45000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' }, (error, stdout) => {
         if (error) { reject(new LifecycleError('无法安全读取或操作客户端进程，请手动退出后重试')); return; }
         try { resolve(JSON.parse(stdout.replace(/^\uFEFF/, '').trim())); } catch { reject(new LifecycleError('系统返回的客户端信息不完整，请手动退出后重试')); }
       });
@@ -73,7 +73,9 @@ function script(source: string, data: unknown): Promise<any> {
 }
 function detached(executable: string, args: string[], cwd?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { shell: false, detached: true, stdio: 'ignore', windowsHide: false, cwd });
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const child = spawn(executable, args, { shell: false, detached: true, stdio: 'ignore', windowsHide: false, cwd, env });
     child.once('error', () => reject(new LifecycleError('客户端启动失败，请检查安装是否完整或手动打开')));
     child.once('spawn', () => { child.unref(); resolve(); });
   });
@@ -203,31 +205,41 @@ if ($applications.Count -eq 1) { $applications[0] | ConvertTo-Json -Compress; ex
 foreach ($fallback in @($inputData.fallbacks)) { if (Test-Path -LiteralPath $fallback -PathType Leaf) { @{ executable = $fallback } | ConvertTo-Json -Compress; exit } }
 @{ missing = $true } | ConvertTo-Json -Compress
 `;
-const listProcessesScript = `
+const processContextScript = `
 $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $currentSession = [Diagnostics.Process]::GetCurrentProcess().SessionId
+$parents = @{}
+foreach ($row in @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId -ErrorAction Stop)) {
+  $parents[[int]$row.ProcessId] = [int]$row.ParentProcessId
+}
 $protectedIds = @{}; $ancestorId = [Diagnostics.Process]::GetCurrentProcess().Id
 for ($depth = 0; $depth -lt 64 -and $ancestorId -gt 0 -and !$protectedIds.ContainsKey($ancestorId); $depth++) {
   $protectedIds[$ancestorId] = $true
-  $ancestor = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $ancestorId) -Property ProcessId,ParentProcessId -ErrorAction Stop
-  if (!$ancestor) { break }; $ancestorId = [int]$ancestor.ParentProcessId
+  if (!$parents.ContainsKey($ancestorId)) { break }; $ancestorId = $parents[$ancestorId]
 }
+`;
+const listProcessesScript = processContextScript + `
 $items = @(); $uncertain = $false
-foreach ($row in @(Get-CimInstance Win32_Process -Filter ('Name=''' + ([IO.Path]::GetFileName($inputData.executable)).Replace("'", "''") + '''') -Property ProcessId,Name,SessionId)) {
+foreach ($row in @(Get-CimInstance Win32_Process -Filter ('Name=''' + ([IO.Path]::GetFileName($inputData.executable)).Replace("'", "''") + '''') -Property ProcessId,Name,SessionId,ExecutablePath)) {
   if ($row.SessionId -ne $currentSession) { continue }
   try {
     $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid -ErrorAction Stop
-    if ($owner.ReturnValue -ne 0) { $uncertain = $true; continue }
+    if ($owner.ReturnValue -ne 0) { throw 'Owner unavailable' }
     if ($owner.Sid -ne $currentSid) { continue }
     $process = Get-Process -Id $row.ProcessId -ErrorAction Stop
     $null = $process.Handle
-    if (!$process.Path) { $uncertain = $true; continue }
+    if (!$process.Path) { throw 'Path unavailable' }
     $items += @{ pid = [int]$row.ProcessId; executable = [string]$process.Path; started = $process.StartTime.ToUniversalTime().Ticks.ToString(); ownerSid = [string]$owner.Sid; sessionId = [int]$process.SessionId; hasWindow = ($process.MainWindowHandle -ne 0); protected = $protectedIds.ContainsKey([int]$row.ProcessId) }
-  } catch { if (Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue) { $uncertain = $true } }
+  } catch {
+    if (Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue) {
+      if ($row.ExecutablePath) { $items += @{ pathOnly = [string]$row.ExecutablePath } }
+      else { $uncertain = $true }
+    }
+  }
 }
 @{ processes = @($items); uncertain = $uncertain } | ConvertTo-Json -Depth 4 -Compress
 `;
-const closeProcessScript = `
+const closeProcessScript = processContextScript + `
 $expected = $inputData.process
 $process = Get-Process -Id ([int]$expected.pid) -ErrorAction SilentlyContinue
 if (!$process) { @{ result = 'gone' } | ConvertTo-Json -Compress; exit }
@@ -238,14 +250,6 @@ if ($process.HasExited) { @{ result = 'gone' } | ConvertTo-Json -Compress; exit 
 $row = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$expected.pid) -Property ProcessId,SessionId -ErrorAction Stop
 if (!$row) { @{ result = 'gone' } | ConvertTo-Json -Compress; exit }
 $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid -ErrorAction Stop
-$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$currentSession = [Diagnostics.Process]::GetCurrentProcess().SessionId
-$protectedIds = @{}; $ancestorId = [Diagnostics.Process]::GetCurrentProcess().Id
-for ($depth = 0; $depth -lt 64 -and $ancestorId -gt 0 -and !$protectedIds.ContainsKey($ancestorId); $depth++) {
-  $protectedIds[$ancestorId] = $true
-  $ancestor = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $ancestorId) -Property ProcessId,ParentProcessId -ErrorAction Stop
-  if (!$ancestor) { break }; $ancestorId = [int]$ancestor.ParentProcessId
-}
 if ($protectedIds.ContainsKey([int]$expected.pid) -or $owner.ReturnValue -ne 0 -or $owner.Sid -ne $currentSid -or $owner.Sid -ne $expected.ownerSid -or $process.SessionId -ne $currentSession -or $process.SessionId -ne $expected.sessionId -or $process.StartTime.ToUniversalTime().Ticks.ToString() -ne $expected.started -or $process.Path -ine $expected.executable) {
   @{ result = 'changed' } | ConvertTo-Json -Compress; exit
 }
@@ -303,7 +307,13 @@ export const nativeClientLifecycleRuntime: ClientLifecycleRuntime = {
     const found = await script(listProcessesScript, { executable: target.executable });
     if (!Array.isArray(found.processes) || typeof found.uncertain !== 'boolean') throw new LifecycleError('无法确认客户端进程身份，请手动退出后重试');
     let uncertain = found.uncertain;
-    const processes = found.processes.filter((entry: ClientProcess) => {
+    const processes = found.processes.filter((entry: ClientProcess & { pathOnly?: string }) => {
+      if (typeof entry?.pathOnly === 'string') {
+        // A short path or a junction can still refer to this installation.
+        try { if (normalized(canonical(entry.pathOnly)) === normalized(target.executable)) uncertain = true; }
+        catch { uncertain = true; }
+        return false;
+      }
       if (!entry || !Number.isInteger(entry.pid) || entry.pid <= 0 || typeof entry.executable !== 'string' || typeof entry.started !== 'string' || !/^\d+$/.test(entry.started) || typeof entry.ownerSid !== 'string' || !Number.isInteger(entry.sessionId) || typeof entry.hasWindow !== 'boolean') { uncertain = true; return false; }
       try { return normalized(canonical(entry.executable)) === normalized(target.executable); } catch { uncertain = true; return false; }
     });
@@ -313,6 +323,10 @@ export const nativeClientLifecycleRuntime: ClientLifecycleRuntime = {
     if (process.platform === 'darwin') return macLifecycle.closeProcess(target, clientProcess);
     if (!this.validateTarget(target) || clientProcess.protected || clientProcess.pid === process.pid || clientProcess.pid === process.ppid) return 'changed';
     try { if (normalized(canonical(clientProcess.executable)) !== normalized(target.executable)) return 'changed'; } catch { return 'changed'; }
+    // Electron helpers often exit with the main window. Avoid starting PowerShell
+    // for a PID that has already disappeared. A live PID still needs all native checks.
+    try { process.kill(clientProcess.pid, 0); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return 'gone'; }
     const result = await script(closeProcessScript, { process: clientProcess });
     if (!['requested', 'gone', 'blocked', 'changed'].includes(result.result)) throw new LifecycleError('客户端强制结束请求未被系统确认');
     return result.result;
@@ -362,13 +376,15 @@ export function createClientLifecycle(runtime: ClientLifecycleRuntime) {
         if (initial.uncertain) return result(false, 'failed', '无法完整确认客户端进程身份，请手动退出客户端后重试');
         if (initial.processes.some(process => process.protected || process.pid === globalThis.process.pid || process.pid === globalThis.process.ppid)) return result(false, 'failed', '目标包含云桥自身或启动云桥的进程，已停止操作，请在客户端中手动处理');
         if (initial.processes.length) {
-          const deadline = runtime.now() + 10000, requested = new Set<string>();
+          const deadline = runtime.now() + (runtime.platform === 'win32' ? 90000 : 10000), requested = new Set<string>();
           let remaining = initial;
+          let sawEmpty = false;
           while (true) {
             if (remaining.uncertain) return result(false, 'failed', '无法确认客户端是否完全退出，请手动检查后重试');
-            if (!remaining.processes.length) break;
+            if (!remaining.processes.length && sawEmpty) break;
+            sawEmpty = remaining.processes.length === 0;
             if (remaining.processes.some(process => process.protected || process.pid === globalThis.process.pid || process.pid === globalThis.process.ppid)) return result(false, 'failed', '目标包含云桥自身或启动云桥的进程，已停止操作，请在客户端中手动处理');
-            if (runtime.now() >= deadline) return result(false, 'failed', '客户端进程尚未完全结束，已停止重新打开，请检查系统权限或后台自动启动程序后重试');
+            if (!sawEmpty && runtime.now() >= deadline) return result(false, 'failed', '客户端进程尚未完全结束，已停止重新打开，请检查系统权限或后台自动启动程序后重试');
             for (const process of remaining.processes) {
               const identity = `${process.pid}:${process.started}`;
               if (requested.has(identity)) continue;
@@ -381,11 +397,13 @@ export function createClientLifecycle(runtime: ClientLifecycleRuntime) {
             await runtime.delay(300);
             remaining = await runtime.listProcesses(target);
           }
+        } else {
+          // An app launched by the user after the initial check must not be terminated.
+          const beforeStart = await runtime.listProcesses(target);
+          if (beforeStart.uncertain) return result(false, 'failed', '无法完整确认客户端进程身份，请重新检测后重试');
+          if (beforeStart.processes.length) return result(false, 'failed', '客户端已在检查期间启动。如需重启，请保存工作后再次确认');
         }
         if (!runtime.validateTarget(target)) return result(false, 'failed', '客户端程序在退出期间已变化，请重新检测后再打开');
-        const beforeStart = await runtime.listProcesses(target);
-        if (beforeStart.uncertain || beforeStart.processes.length) return result(false, 'failed', '客户端进程状态已变化，请确认完全退出后重试');
-        if (!runtime.validateTarget(target)) return result(false, 'failed', '客户端启动目标已变化，请重新检测后再操作');
         await runtime.startDesktop(target);
         const deadline = runtime.now() + 10000;
         while (true) {

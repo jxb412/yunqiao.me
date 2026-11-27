@@ -223,13 +223,35 @@ try {
   store.savePlugin({ id: loopPlugin.id, enabled: false });
   store.savePlugin({ id: 'word-guard', enabled: false });
 
-  store.saveAgent({ id: 'claude-desktop', connected: true, providerId: provider.id, model: 'test-model' });
+  const desktopCatalog = [
+    { id: 'test-model' }, { id: 'vendor/model-2', displayName: 'Other' }, { id: 'claude-fable-5' },
+    { id: 'claude-sonnet-aurora' }, { id: 'yunqiao-model/claude-sonnet-aurora' },
+  ];
+  store.saveProvider({ id: provider.id, models: desktopCatalog });
+  store.saveAgent({ id: 'claude-desktop', connected: true, providerId: provider.id, model: 'claude-fable-5', modelMap: { sonnet: 'test-model' } });
   response = await call('/claude-desktop/v1/models');
-  check('Claude Desktop model discovery returns Anthropic schema', () => assert.equal(response.status, 200));
-  assert.equal((await response.json()).data[0].id, 'claude-sonnet-aurora');
+  const discovered = await response.json();
+  check('Claude Desktop discovery includes each actual model, with the selected default first', () => {
+    assert.equal(response.status, 200);
+    assert.deepEqual(discovered.data.map(m => m.id), ['claude-fable-5', 'test-model', 'vendor/model-2', 'yunqiao-model/claude-sonnet-aurora', 'yunqiao-model/yunqiao-model/claude-sonnet-aurora']);
+    assert.equal(discovered.data[2].display_name, 'Other (vendor/model-2)');
+  });
+  for (const { id } of desktopCatalog) {
+    const entry = discovered.data.find(m => m.id === id && m.display_name === id) || discovered.data.find(m => m.display_name === id || m.display_name.endsWith(` (${id})`));
+    const info = await call('/claude-desktop/v1/models/' + encodeURIComponent(entry.id));
+    assert.equal(info.status, 200);
+    assert.deepEqual(await info.json(), entry);
+    const sent = await post('/claude-desktop/v1/messages', { model: entry.id, max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] });
+    assert.equal(sent.status, 200);
+    assert.equal(requests.at(-1).body.model, id);
+  }
+  const countBeforeUnknown = requests.length;
+  response = await post('/claude-desktop/v1/messages', { model: 'another-provider/unknown', max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] });
+  check('Claude Desktop refuses an undeclared model before sending upstream', () => { assert.equal(response.status, 400); assert.equal(requests.length, countBeforeUnknown); });
   response = await post('/claude-desktop/v1/messages', { model: 'claude-sonnet-aurora', max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] });
   const desktop = await response.json();
   check('Claude Desktop aliases route to selected provider and model', () => { assert.equal(response.status, 200); assert.equal(requests.at(-1).body.model, 'test-model'); assert.equal(desktop.model, 'claude-sonnet-aurora'); });
+  store.saveProvider({ id: provider.id, models: provider.models });
 
   const fresh = await fetchCloudCatalog(upstreamUrl + '/catalog', store);
   check('remote catalog validates and caches', () => { assert.equal(fresh.source, 'remote'); assert.equal(fresh.providers.length, 1); });

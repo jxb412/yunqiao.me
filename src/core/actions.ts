@@ -725,7 +725,15 @@ export async function runAction(deps: ActionDeps, action: string, payload: any):
         let expected = new Map(catalogExpected);
         try {
           expected = new Map([...expectedPlanFiles(sharedCodex ? 'codex-cli' : adapter.id, result.backup, clientBefore), ...catalogExpected]);
-          store.saveAgents(ids.map(id => ({ id, connected: true, pendingReapply: false, providerId: provider.id, model: context.model, modelMap: context.modelMap, mode: context.mode, authMode, permissionMode: context.permissionMode, skipOnboarding: context.skipOnboarding, configPath: result.path, backupPath: result.backup })));
+          // Old Claude Desktop conversations store role aliases. Reapplying the same provider
+          // should preserve their routing even when the new menu default changes.
+          const oldDesktop = adapter.id === 'claude-desktop' && prior?.providerId === provider.id ? prior : undefined;
+          const modelMap = context.modelMap ?? (oldDesktop?.model ? {
+            sonnet: oldDesktop.modelMap?.sonnet || oldDesktop.model,
+            opus: oldDesktop.modelMap?.opus || oldDesktop.model,
+            haiku: oldDesktop.modelMap?.haiku || oldDesktop.model,
+          } : undefined);
+          store.saveAgents(ids.map(id => ({ id, connected: true, pendingReapply: false, providerId: provider.id, model: context.model, modelMap, mode: context.mode, authMode, permissionMode: context.permissionMode, skipOnboarding: context.skipOnboarding, configPath: result.path, backupPath: result.backup })));
         } catch { return clientStateFailure([...clientBefore, ...catalogBefore], expected, result.backup); }
       }
       return result;

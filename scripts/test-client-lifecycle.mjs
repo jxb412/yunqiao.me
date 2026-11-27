@@ -94,7 +94,7 @@ try {
   });
   await check('A client that refuses to exit is left running after the bounded wait', async () => {
     const f = fixture({ closeProcess: async () => 'requested' }); f.state.processes = [processEntry()];
-    const result = await f.restartClient({ agentId: 'claude-desktop' }); assert.equal(result.ok, false); assert.match(result.message, /尚未完全结束/); assert.equal(f.state.starts.length, 0); assert.equal(f.state.processes.length, 1); assert(f.state.delayCount <= 34);
+    const result = await f.restartClient({ agentId: 'claude-desktop' }); assert.equal(result.ok, false); assert.match(result.message, /尚未完全结束/); assert.equal(f.state.starts.length, 0); assert.equal(f.state.processes.length, 1); assert(f.state.delayCount <= 300);
   });
   await check('New background instances discovered during shutdown are terminated before launch', async () => {
     const f = fixture(); f.state.processes = [processEntry()];
@@ -116,6 +116,19 @@ try {
       const result = await f.restartClient({ agentId: 'claude-desktop' });
       assert.equal(result.ok, false); assert.equal(f.state.closes.length, 1); assert.equal(f.state.starts.length, 0);
     }
+  });
+  await check('A verified helper appearing after the first empty shutdown scan is drained before launching once', async () => {
+    const f = fixture();
+    f.state.processes = [processEntry()];
+    let polls = 0;
+    f.runtime.listProcesses = async () => {
+      polls++;
+      if (polls === 3) f.state.processes = [processEntry({ pid: 987654, hasWindow: false })];
+      return { processes: [...f.state.processes], uncertain: false };
+    };
+    const result = await f.restartClient({ agentId: 'claude-desktop' });
+    assert.equal(result.operation, 'restarted'); assert.deepEqual(f.state.closes.map(p => p.pid), [987651, 987654]);
+    assert.equal(f.state.starts.length, 1);
   });
   await check('An executable replaced during exit is not launched', async () => {
     const f = fixture(); f.state.processes = [processEntry()]; let validations = 0; f.runtime.validateTarget = () => ++validations === 1;

@@ -131,10 +131,7 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
     : Object.keys(provider.headers || {}).length ? '此供应商有自定义请求头，当前直连配置不会写入这些请求头，请使用本地网关。'
     : provider.proxy?.trim() ? '此供应商使用独立代理，当前直连配置不会写入代理设置，请使用本地网关。'
     : state.settings.proxy?.trim() ? '云桥已设置网络代理，当前直连配置不会写入代理设置，请使用本地网关。'
-    : directEndpointIssue
-      ? directEndpointIssue
-    : agent.id === 'claude-desktop' && !/^(?:anthropic\/)?claude-(?:sonnet|opus|haiku)-/.test(chosenModel) ? 'Claude 桌面直连需要 Claude 角色模型；其他模型请通过本地网关映射。'
-    : '';
+    : directEndpointIssue;
   const connectionMode = directIssue ? 'gateway' : mode;
   const canSetPermissions = codex || agent.id === 'claude-code';
   const payload = { agentId: agent.id, providerId, model: chosenModel, mode: connectionMode, authMode: selectedAuthMode, permissionMode: canSetPermissions ? permissionMode : 'preserve', skipOnboarding: agent.id === 'claude-code' && skipOnboarding };
@@ -240,7 +237,7 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
       {step === 1 && <>
         {codingDesktop && <DesktopSetupRecovery agent={agent} detected={detected} platform={state.platform} busy={busy} operation={recoveryOperation} canPreview={!!chosenModel} onDetect={() => { void run(() => recoverDesktop('detect')); }} onSelect={() => { void run(() => recoverDesktop('select')); }} />}
         <div className="review-summary"><b>{provider?.name}</b><span className="chip">{PROTOCOL_TEXT[provider?.format || '']}</span><span className="grow" /><Btn size="sm" disabled={busy || providerId === 'official'} onClick={() => run(async () => { const r = await call('provider.models', { providerId }); if (!r.ok) throw new Error(r.message); await reload(); toast.push(`模型已同步，新增 ${r.added || 0} 个`, 'ok'); })}><Ico name="refresh" size={12} />同步模型</Btn></div>
-        <Field label="选择模型"><select aria-label="选择模型" className="select" disabled={manualModel} value={chosenModel} onChange={e => { setModel(e.target.value); clearSelectionFeedback(); }}><option value="" disabled>请选择模型</option>{provider?.models.map(m => <option key={m.id} value={m.id}>{m.displayName || m.id}{m.contextWindow ? ` · ${fmtCtx(m.contextWindow)} 上下文` : ''}</option>)}</select></Field>
+        <Field label={agent.id === 'claude-desktop' ? '选择默认模型' : '选择模型'} hint={agent.id === 'claude-desktop' ? '所选模型在 Claude Desktop 菜单中排在首位。保存配置并重启 Claude 后，可在菜单里切换这个供应商的其他模型。' : undefined}><select aria-label="选择模型" className="select" disabled={manualModel} value={chosenModel} onChange={e => { setModel(e.target.value); clearSelectionFeedback(); }}><option value="" disabled>请选择模型</option>{provider?.models.map(m => <option key={m.id} value={m.id}>{m.displayName || m.id}{agent.id === 'claude-desktop' && m.displayName && m.displayName !== m.id ? ` (${m.id})` : ''}{m.contextWindow ? ` · ${fmtCtx(m.contextWindow)} 上下文` : ''}</option>)}</select></Field>
         {codex && <div><ContextCompactHint value={selectedContextWindow} id="client-context-compact-hint" /><p className="hint">应用时按上下文的 90% 同步默认自动压缩阈值，重启客户端后生效。其他压缩策略与实际触发时机由客户端决定。</p></div>}
         {providerId !== 'official' && <>
           {!!provider?.models.length && <Btn size="sm" onClick={() => { setManualModel(!manualModel); if (manualModel) setModel(provider.models[0]?.id || ''); clearSelectionFeedback(); }}>{manualModel ? '返回模型列表' : '手动输入其他模型 ID'}</Btn>}

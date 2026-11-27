@@ -91,9 +91,28 @@ try {
   const desktopPaths = desktop.configPaths();
   write(desktopPaths[0], JSON.stringify({ deploymentMode: '1p', userPreference: true }));
   write(desktopPaths[2], JSON.stringify({ appliedId: 'existing', entries: [{ id: 'existing', name: 'Existing profile' }] }));
-  const d = desktop.connect(context);
-  check('Claude Desktop writes real 3P profiles and preserves other profiles', () => { assert(d.ok, d.message); const profile = JSON.parse(read(desktopPaths[3])); assert.equal(profile.inferenceProvider, 'gateway'); assert.equal(profile.inferenceGatewayBaseUrl, 'http://127.0.0.1:3425/claude-desktop'); assert(profile.inferenceModels.some(x => x.name === 'claude-sonnet-aurora')); assert.equal(profile.coworkEgressAllowedHosts, undefined); assert(JSON.parse(read(desktopPaths[2])).entries.some(x => x.id === 'existing')); assert(JSON.parse(read(desktopPaths[0])).userPreference); });
+  const desktopProvider = { ...provider, models: [...provider.models, { id: 'vendor/model-3', displayName: 'Model 3' }, { id: 'claude-fable-5' }, { id: 'model-one' }] };
+  const d = desktop.connect({ ...context, provider: desktopProvider, model: 'model-two' });
+  check('Claude Desktop writes all distinct models, default first, and preserves other profiles', () => {
+    assert(d.ok, d.message);
+    const profile = JSON.parse(read(desktopPaths[3]));
+    assert.equal(profile.inferenceProvider, 'gateway');
+    assert.equal(profile.inferenceGatewayBaseUrl, 'http://127.0.0.1:3425/claude-desktop');
+    assert.deepEqual(profile.inferenceModels.map(m => m.name), ['model-two', 'model-one', 'vendor/model-3', 'claude-fable-5']);
+    assert.equal(profile.inferenceModels[2].labelOverride, 'Model 3 (vendor/model-3)');
+    assert.equal(profile.coworkEgressAllowedHosts, undefined);
+    assert(JSON.parse(read(desktopPaths[2])).entries.some(x => x.id === 'existing'));
+    assert(JSON.parse(read(desktopPaths[0])).userPreference);
+  });
   check('Multi-file restore removes only newly created profiles and restores previous selection', () => { assert(desktop.disconnect(d.backup).ok); assert(!fs.existsSync(desktopPaths[1])); assert(!fs.existsSync(desktopPaths[3])); assert.equal(JSON.parse(read(desktopPaths[2])).appliedId, 'existing'); assert.equal(JSON.parse(read(desktopPaths[0])).deploymentMode, '1p'); });
+  check('Claude Desktop direct mode lists a single custom ID once, without role aliases', () => {
+    const direct = desktop.connect({ ...context, mode: 'direct', model: 'claude-fable-5', provider: { ...provider, format: 'anthropic', models: [{ id: 'claude-fable-5' }] } });
+    assert(direct.ok, direct.message);
+    const profile = JSON.parse(read(desktopPaths[3]));
+    assert.deepEqual(profile.inferenceModels, [{ name: 'claude-fable-5', labelOverride: 'claude-fable-5' }]);
+    assert.equal(profile.inferenceGatewayBaseUrl, 'https://example.com');
+    assert(desktop.disconnect(direct.backup).ok);
+  });
   const [geminiFile, envFile] = gemini.configPaths();
   write(geminiFile, JSON.stringify({ security: { other: true }, model: { maxSessionTurns: 20 } })); write(envFile, 'CUSTOM=preserve\nGEMINI_API_KEY=old-secret\n');
   const g = gemini.connect(context);
@@ -116,6 +135,20 @@ try {
   const historyHome = path.join(isolated, '.codex');
   const deps = { store, dataDir: store.dir, gatewayStatus: () => ({ running: true }), gatewayUrl: () => context.gatewayUrl,
     historyContext: { home: historyHome, sqliteHome: historyHome, blockingProcesses: async () => [] } };
+  const desktopSelection = { agentId: 'claude-desktop', providerId: savedProvider.id, model: 'model-one' };
+  const firstDesktop = await api.runAction(deps, 'agent.connect', { ...desktopSelection, modelMap: { haiku: 'model-two' } });
+  assert(firstDesktop.ok, firstDesktop.message);
+  const nextDesktop = { ...desktopSelection, model: 'model-two' };
+  const desktopPreview = await api.runAction(deps, 'agent.preview', nextDesktop);
+  const updatedDesktop = await api.runAction(deps, 'agent.connect', { ...nextDesktop, revision: desktopPreview.revision });
+  check('Updating the native default through the wizard keeps every old conversation role on its former upstream', () => {
+    assert(updatedDesktop.ok, updatedDesktop.message);
+    const { model, modelMap } = store.listAgents()['claude-desktop'];
+    assert.equal(model, 'model-two');
+    assert.deepEqual(modelMap, { sonnet: 'model-one', opus: 'model-one', haiku: 'model-two' });
+    assert.equal(JSON.parse(read(desktopPaths[3])).inferenceModels[0].name, 'model-two');
+  });
+  assert((await api.runAction(deps, 'agent.disconnect', { agentId: 'claude-desktop' })).ok);
   for (const setting of ['headers', 'providerProxy', 'globalProxy']) {
     const blockedProvider = store.saveProvider({ ...provider, id: undefined, format: 'openai-responses', ...(setting === 'headers' ? { headers: { 'X-Required': 'fixture' } } : setting === 'providerProxy' ? { proxy: 'http://127.0.0.1:1234' } : {}) });
     if (setting === 'globalProxy') store.saveSettings({ proxy: 'http://127.0.0.1:1234' });

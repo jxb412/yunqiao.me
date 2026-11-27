@@ -11,6 +11,7 @@ import { CLAUDE_DESKTOP_PROFILE, claudeDesktopConfigFiles, claudeDesktopRestoreP
 import { readOfficialCodexIdentity, codexCoexistBaseUrl, CODEX_COEXIST_BASE_PATH } from '../gateway/coexist.js';
 import { codexHistoryBasePath } from '../gateway/historyRoute.js';
 import { nativeDirectParameters } from './directConnection.js';
+import { claudeDesktopModels } from './claudeDesktopModels.js';
 import { discoverHistoryProviderIds, detachManagedHistoryProviders, withHistoryProviderAliases, clearManagedHistoryTarget } from './historyProviders.js';
 import { isGatewayCatalogPath, readManagedGatewayModelCatalog } from './catalogStorage.js';
 import { applyPlan, restorePlan, backupPlanFiles, jsonObject, planned, plannedJson, readText, patchToml, patchEnv, redactConfig, digest, type PlannedFile } from './configFiles.js';
@@ -354,14 +355,13 @@ function desktopConfigPaths(): string[] {
 }
 const claudeDesktop = makeAdapter({
   id: 'claude-desktop', name: 'Claude 桌面版', vendor: 'Anthropic', category: 'desktop', support: 'automatic', protocol: 'anthropic', description: '通过支持第三方配置的 Claude Desktop 版本接入模型网关。',
-  supportNote: '使用 Claude Desktop 的 3P profile；Sonnet、Opus、Haiku 可映射为国内外模型。需要支持 Gateway 的新版客户端。',
-  docsUrl: 'https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/2-providers/2.6-claude-desktop.md', desktop: 'Claude', paths: desktopConfigPaths,
+  supportNote: '使用 Claude Desktop 的第三方配置，将所选供应商的模型写入桌面模型菜单。',
+  docsUrl: 'https://claude.com/docs/third-party/claude-desktop/models', desktop: 'Claude', paths: desktopConfigPaths,
   warnings: ['仅适用于支持 3P / Gateway 的 Claude Desktop 版本；旧版不会读取此配置。', '模型映射模式使用期间需保持云桥网关运行。客户端功能也取决于上游模型能力。'],
   plan(ctx) {
     const selected = resolveClaudeDesktopConfig();
     if (!selected.root) throw new Error(selected.reason);
     const [normal, thirdParty, metaFile, profileFile] = claudeDesktopConfigFiles(selected.root), ep = connectionParameters(ctx, 'anthropic');
-    if (ctx.mode === 'direct' && !/^(?:anthropic\/)?claude-(?:sonnet|opus|haiku)-/.test(ctx.model)) throw new Error('Claude Desktop 直连需要可识别的 Claude 角色模型；其他模型请选择网关接入');
     const main = jsonObject(normal); main.deploymentMode = '3p';
     const third = jsonObject(thirdParty); third.deploymentMode = '3p';
     const meta = jsonObject(metaFile);
@@ -369,7 +369,7 @@ const claudeDesktop = makeAdapter({
     meta.entries = (meta.entries || []).filter((x: any) => x?.id !== DESKTOP_PROFILE); meta.entries.push({ id: DESKTOP_PROFILE, name: '云桥 AI' }); meta.appliedId = DESKTOP_PROFILE;
     const profile = jsonObject(profileFile);
     Object.assign(profile, { inferenceProvider: 'gateway', inferenceGatewayBaseUrl: ctx.mode === 'gateway' ? ep.baseUrl + '/claude-desktop' : ep.baseUrl, inferenceGatewayAuthScheme: 'bearer', inferenceGatewayApiKey: ep.apiKey,
-      inferenceModels: ctx.mode === 'gateway' ? ['sonnet', 'opus', 'haiku'].map(role => ({ name: `claude-${role}-aurora`, labelOverride: `${ctx.provider.name} · ${ctx.modelMap?.[role] || ctx.model}` })) : [ctx.model] });
+      inferenceModels: claudeDesktopModels(ctx.provider, ctx.model, ctx.mode === 'gateway') });
     return [plannedJson(normal, main), plannedJson(thirdParty, third), plannedJson(metaFile, meta), plannedJson(profileFile, profile)];
   },
 });

@@ -17,6 +17,7 @@ import {
 } from '../protocol/index.js';
 import { JsonLines } from '../store/jsonFile.js';
 import { Router } from './router.js';
+import { claudeDesktopModels, claudeDesktopTarget } from '../agents/claudeDesktopModels.js';
 import { trackRequest, updateRequest, finishRequest } from './liveUsage.js';
 import { fillResponsePhases, ResponsePhaseStream } from './responsePhase.js';
 import { openUpstream, readAll } from './upstream.js';
@@ -245,15 +246,20 @@ export class GatewayServer {
       return;
     }
 
-    if (path.startsWith('/claude-desktop/v1/models') && req.method === 'GET') {
+    const desktopModelsPath = '/claude-desktop/v1/models';
+    if ((path === desktopModelsPath || path.startsWith(desktopModelsPath + '/')) && req.method === 'GET') {
       const state = this.deps.store.listAgents()['claude-desktop'];
-      const families = ['sonnet', 'opus', 'haiku'];
-      const data = state?.connected ? families.map((family) => ({
-        id: `claude-${family}-aurora`, type: 'model', display_name: `云桥 · ${family}`, created_at: '2026-01-01T00:00:00Z',
-      })) : [];
-      const id = path.slice('/claude-desktop/v1/models/'.length);
-      const model = data.find((item) => item.id === id);
-      if (path !== '/claude-desktop/v1/models' && !model) {
+      const provider = state?.connected && state.providerId ? this.deps.store.getProvider(state.providerId) : undefined;
+      const metadata = (id: string, label: string) => ({ id, type: 'model', display_name: label, created_at: '2026-01-01T00:00:00Z' });
+      const data = provider?.enabled ? claudeDesktopModels(provider, state.model, true).map(entry => metadata(entry.name, entry.labelOverride)) : [];
+      let id = '';
+      try { id = decodeURIComponent(path.slice(desktopModelsPath.length + 1)); } catch { /* malformed ID returns 404 */ }
+      let model = data.find(item => item.id === id);
+      if (id && !model && provider?.enabled) {
+        const legacy = claudeDesktopTarget(provider, state, id);
+        if (legacy) model = metadata(id, legacy);
+      }
+      if (path !== desktopModelsPath && !model) {
         res.writeHead(404, { 'content-type': 'application/json', ...CORS });
         res.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: '模型不存在或尚未接入 Claude 桌面端' } }));
       } else {
@@ -558,19 +564,19 @@ export class GatewayServer {
     const masker = new Masker(settings.maskSecrets);
     if (settings.maskSecrets) ir = masker.maskRequest(ir);
 
-    let routeModel = ir.model;
+    let fixedTarget: { providerId: string; model: string } | undefined = historyTarget;
     if (path.startsWith('/claude-desktop/')) {
       const state = store.listAgents()['claude-desktop'];
-      const family = /^claude-(sonnet|opus|haiku)-aurora$/.exec(ir.model)?.[1];
-      const selected = family && state?.connected && state.providerId ? state.modelMap?.[family] || state.model : undefined;
-      if (!selected || !state?.providerId) {
+      const provider = state?.connected && state.providerId ? store.getProvider(state.providerId) : undefined;
+      const selected = provider?.enabled ? claudeDesktopTarget(provider, state, ir.model) : undefined;
+      if (!selected || !provider) {
         res.writeHead(400, { 'content-type': 'application/json', ...CORS });
         res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: '请先在客户端接入中配置 Claude 桌面端的供应商和模型' } }));
         return;
       }
-      routeModel = selected.startsWith(`${state.providerId}/`) ? selected : `${state.providerId}/${selected}`;
+      fixedTarget = { providerId: provider.id, model: selected };
     }
-    const resolved = historyTarget ? this.router.resolveProviderModel(historyTarget.providerId, historyTarget.model) : this.router.resolveModel(routeModel);
+    const resolved = fixedTarget ? this.router.resolveProviderModel(fixedTarget.providerId, fixedTarget.model) : this.router.resolveModel(ir.model);
     if (!resolved.candidates.length) {
       const boundProvider = historyTarget ? store.getProvider(historyTarget.providerId) : undefined;
       res.writeHead(historyTarget ? !boundProvider ? 404 : !boundProvider.enabled ? 409 : 503 : 400, { 'content-type': 'application/json', ...CORS });
