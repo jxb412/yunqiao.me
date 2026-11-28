@@ -3,6 +3,7 @@ import { getAdapter } from './agents/adapters.js';
 import { buildUpstreamHttp, parseClientRequest, parseUpstreamJson } from './protocol/index.js';
 import { openUpstream, readAll } from './gateway/upstream.js';
 import { Router } from './gateway/router.js';
+import { providerAllowsAnonymous, providerEndpoint } from './providerEndpoint.js';
 import type { ProtocolName } from './types.js';
 import type { AuroraStore, Provider } from './store/index.js';
 
@@ -47,7 +48,6 @@ const idValid = (value: unknown): value is string => typeof value === 'string' &
 // Existing model IDs may include Chinese names, namespaces, spaces and suffixes such as [1m].
 // They are matched to stored models, sent as JSON, and encoded as one segment for Gemini.
 const modelValid = (value: unknown): value is string => typeof value === 'string' && !!value.trim() && value.length <= 512 && !/[\u0000-\u001f\u007f]/.test(value);
-const localHost = (hostname: string) => ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(hostname.toLowerCase());
 
 function registryFor(store: AuroraStore): TestRegistry {
   let registry = registries.get(store);
@@ -93,14 +93,13 @@ export async function testClientConnection(deps: ActionDeps, payload: unknown): 
     if (!PROTOCOLS.has(provider.format)) return fail('invalid_protocol', '供应商协议无效，请检查供应商设置');
     if (!provider.models.some(model => model.id === request.model)) return fail('model_unavailable', '请先将所选模型保存到供应商的模型列表');
     base.protocol = request.target === 'local' ? adapter.protocol as ProtocolName : provider.format;
-    let baseUrl: string;
-    try {
-      const url = new URL(provider.baseUrl);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
-      baseUrl = url.href.replace(/\/$/, '');
-    } catch { return fail('invalid_provider_url', '供应商 API 地址无效，请检查地址和协议设置'); }
+    let endpoint;
+    try { endpoint = providerEndpoint(provider.baseUrl, provider.format); }
+    catch { return fail('invalid_provider_url', '供应商 API 地址无效，请检查地址和协议设置'); }
+    let baseUrl = endpoint.baseUrl;
     const key = provider.apiKeys.find(item => item.enabled && !!item.key.trim());
-    if (!key && !localHost(new URL(baseUrl).hostname)) return fail('missing_key', '所选供应商没有已启用的 API Key');
+    if (!key && !providerAllowsAnonymous(endpoint.hostname, provider.apiKeys))
+      return fail('missing_key', '所选供应商没有可用的密钥条目');
     const settings = deps.store.getSettings();
     let token = key?.key || '';
     let proxy = provider.proxy || settings.proxy || undefined;

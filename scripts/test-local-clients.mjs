@@ -193,6 +193,19 @@ try {
     const result = scan(f); assert.equal(result.added, 5); assert.deepEqual(new Set(f.store.listProviders().map(p => p.format)), new Set(['anthropic', 'gemini', 'openai-chat']));
     assert(result.sources.every(s => !!s.path && !!s.providerId)); assert(f.store.listProviders().every(p => p.notes.includes('配置文件：')));
   });
+  test('Gemini discovery reads commented settings and credentials from the native custom home', () => {
+    const f = fixture('gemini-custom-root'), root = path.join(f.home, 'custom');
+    write(path.join(f.home, '.gemini', '.env'), 'GEMINI_API_KEY=stale-key\nGEMINI_MODEL=stale-model');
+    const file = path.join(root, '.gemini', 'settings.json');
+    const settings = '{\n  // keep this private comment\n  "model": { "name": "custom-model" }\n}';
+    write(file, settings);
+    write(path.join(root, '.gemini', '.env'), 'GEMINI_API_KEY=fixture-custom-key\nGOOGLE_GEMINI_BASE_URL=https://gemini.test');
+    const result = scan(f, { environment: { GEMINI_CLI_HOME: root } });
+    assert.equal(result.added, 1);
+    assert.deepEqual(f.store.listProviders()[0].models.map(model => model.id), ['custom-model']);
+    assert.equal(fs.readFileSync(file, 'utf8'), settings);
+    assert(!JSON.stringify(result).includes('private comment'));
+  });
   test('missing source does not erase the imported supplier and a corrupt ledger fails closed', () => {
     const f = fixture('missing'); codex(f, relayConfig('sk-source-file-removed')); scan(f); const before = f.store.listProviders();
     fs.unlinkSync(path.join(f.home, '.codex', 'config.toml')); assert(scan(f).sources.some(s => s.status === 'missing-file')); assert.deepEqual(f.store.listProviders(), before);
@@ -217,10 +230,13 @@ try {
     const f = fixture(`override-roots-${platform}`), codexRoot = path.join(f.home, 'custom-codex'), claudeRoot = path.join(f.home, 'custom-claude');
     write(path.join(codexRoot, 'config.toml'), relayConfig('sk-explicit-codex-profile'));
     write(path.join(claudeRoot, 'settings.json'), { env: { ANTHROPIC_BASE_URL: 'https://claude.test', ANTHROPIC_API_KEY: 'sk-explicit-claude-profile' } });
+    write(path.join(f.home, '.claude.json'), { oauthAccount: { emailAddress: 'other@example.test' } });
+    write(path.join(claudeRoot, '.claude.json'), { oauthAccount: { emailAddress: 'active@example.test' } });
     codex(f, relayConfig('sk-unused-default-profile'));
     const result = scan(f, { platform, environment: { CODEX_HOME: codexRoot, CLAUDE_CONFIG_DIR: claudeRoot } });
     assert.equal(result.added, 2); assert(!f.store.listProviders().some(p => p.apiKeys.some(k => k.key === 'sk-unused-default-profile')));
     assert(result.sources.every(s => s.path.startsWith(codexRoot) || s.path.startsWith(claudeRoot)));
+    assert.equal(result.accounts.find(a => a.kind === 'claude')?.source, path.join(claudeRoot, '.claude.json'));
   });
   test('macOS XDG override applies to Copilot and OpenCode without scanning stale default credentials', () => {
     const f = fixture('xdg-macos'), xdg = path.join(f.home, 'custom-xdg');

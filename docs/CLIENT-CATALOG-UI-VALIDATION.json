@@ -1,12 +1,15 @@
 {
   "passed": true,
-  "count": 15,
+  "count": 18,
   "checks": [
     "A provider created from a nonempty preset synchronizes upstream models and preserves the selected preset model",
     "Pending client preview locks model edits; failed application requires a fresh reviewed selection and revision",
     "unavailable model discovery keeps the saved provider usable; manual IDs are saved before preview without duplicate providers",
     "reject model discovery keeps the saved provider usable; manual IDs are saved before preview without duplicate providers",
     "Official-account models stay restricted to the verified native model catalog",
+    "Reopening a connection uses an available model and never re-adds a deleted ID implicitly",
+    "A removed provider and signed-out official account allow an explicit switch from coexistence to API",
+    "Gemini CLI and Claude Code with an anonymous local upstream can preview a working gateway configuration",
     "Partial local scan failures remain visible, link to scan details and only report success after recovery",
     "Cloud import shows cache warnings, follows background catalog updates, drops removed selections and supports explicit refresh",
     "Failed cloud imports preserve the dialog and selection; retry disables duplicate requests and closes only after success",

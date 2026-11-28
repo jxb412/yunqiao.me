@@ -25,6 +25,7 @@ import { buildUpstreamHttp, parseClientRequest } from './protocol/index.js';
 import type { GatewayStatus } from './gateway/server.js';
 import type { Provider, UsageRecord } from './store/types.js';
 import { buildInfo } from './buildInfo.js';
+import { providerAllowsAnonymous, providerEndpoint } from './providerEndpoint.js';
 import { runHistoryRepairAction } from './historyRepair.js';
 import { runSessionIndexRepairAction } from './sessionIndexRepair.js';
 import {
@@ -49,6 +50,7 @@ export interface ActionDeps {
   store: AuroraStore;
   gatewayStatus: () => GatewayStatus;
   gatewayUrl: () => string;
+  startGateway?: () => Promise<void>;
   restartGateway?: () => Promise<void>;
   resetCooldowns?: () => void;
   platform?: string;
@@ -173,9 +175,9 @@ function extractErr(text: string): string {
 export async function testProvider(deps: ActionDeps, payload: { providerId: string; model?: string }) {
   const p = deps.store.getProvider(payload.providerId);
   if (!p) return { ok: false, message: '供应商不存在' };
-  const key = p.apiKeys.find((k) => k.enabled && k.key);
+  const key = p.apiKeys.find((k) => k.enabled && k.key.trim());
   let local = false;
-  try { local = ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(p.baseUrl).hostname); } catch { return { ok: false, message: '供应商地址无效' }; }
+  try { local = providerAllowsAnonymous(new URL(p.baseUrl).hostname, p.apiKeys); } catch { return { ok: false, message: '供应商地址无效' }; }
   if (!key?.key && !local)
     return { ok: false, message: '这家供应商还没有填 API Key' };
   const model = payload.model ?? p.models[0]?.id ?? '';
@@ -273,20 +275,26 @@ async function readProviderModelPages(endpoint: string, format: Provider['format
 export async function fetchProviderModels(deps: ActionDeps, payload: { providerId: string }) {
   const p = deps.store.getProvider(payload.providerId);
   if (!p) return { ok: false, models: [], message: '供应商已不存在，请刷新列表' };
-  if (!p.baseUrl.trim()) return { ok: false, models: p.models, message: '请先填写供应商的实际 API 地址，再同步模型' };
+  if (typeof p.baseUrl !== 'string' || !p.baseUrl.trim()) return { ok: false, models: p.models, message: '请先填写供应商的实际 API 地址，再同步模型' };
+  let endpoint;
+  try { endpoint = providerEndpoint(p.baseUrl, p.format); }
+  catch { return { ok: false, models: p.models, message: '供应商接口地址无效，请检查后重新同步模型' }; }
   const connection = (provider: Provider) => JSON.stringify({ baseUrl: provider.baseUrl, format: provider.format,
     headers: provider.headers, proxy: provider.proxy || deps.store.getSettings().proxy,
     keys: provider.apiKeys.map(k => ({ key: k.key, enabled: k.enabled })) });
   const startedConnection = connection(p), startedModels = new Set(p.models.map(m => m.id));
-  const key = p.apiKeys.find((k) => k.enabled && k.key);
-  const base = p.baseUrl.replace(/\/+$/, '');
-  const urls = p.format === 'gemini'
-    ? [`${base}${/\/v1(?:beta)?$/.test(base) ? '' : '/v1beta'}/models`]
-    : [...new Set([`${base}${/\/v1$/.test(base) ? '' : '/v1'}/models`, `${base}/models`])];
-  const headers: Record<string, string> = p.format === 'anthropic'
-    ? { 'x-api-key': key?.key || '', 'anthropic-version': '2023-06-01' }
-    : p.format === 'gemini' ? { 'x-goog-api-key': key?.key || '' }
-    : { authorization: `Bearer ${key?.key || ''}` };
+  const key = p.apiKeys.find(k => k.enabled && k.key.trim())?.key;
+  const { baseUrl: base, version } = endpoint;
+  const urls = version ? [`${base}/models`] : p.format === 'gemini'
+    ? [`${base}/v1beta/models`] : [`${base}/v1/models`, `${base}/models`];
+  const headers: Record<string, string> = {};
+  if (p.format === 'anthropic') {
+    headers['anthropic-version'] = '2023-06-01';
+    if (key) headers['x-api-key'] = key;
+  } else if (key) {
+    if (p.format === 'gemini') headers['x-goog-api-key'] = key;
+    else headers.authorization = `Bearer ${key}`;
+  }
   for (const url of urls) {
     try {
       const catalog = await readProviderModelPages(url, p.format, { ...headers, ...p.headers }, p.proxy || deps.store.getSettings().proxy || undefined);
@@ -714,8 +722,14 @@ export async function runAction(deps: ActionDeps, action: string, payload: any):
       }
       if (action === 'agent.preview' || !preview.ok) return preview;
       if (action === 'agent.parameters') return { ok: true, ...connectionParameters(context, adapter.protocol), script: exportEnvScript(context, adapter.protocol), note: adapter.supportNote };
-      if (context.mode === 'gateway' && !deps.gatewayStatus().running) return { ok: false, message: '本地网关未运行，请先启动网关后再应用配置' };
       if (context.expectedRevision && context.expectedRevision !== preview.revision && !acceptedCatalogDowngrade) return { ok: false, message: '配置或连接参数在预览后已变化，请重新预览再应用' };
+      if (context.mode === 'gateway' && !deps.gatewayStatus().running) {
+        if (adapter.support !== 'automatic' || !deps.startGateway) return { ok: false, message: '本地网关未运行，请先启动网关后再应用配置' };
+        try { await deps.startGateway(); } catch { /* Report startup failure without exposing connection details. */ }
+        if (!deps.gatewayStatus().running) return { ok: false, message: '本地网关启动失败。请检查系统设置中的监听地址和端口占用后重试，客户端配置尚未写入。' };
+        // The client or provider may have changed while the listener was starting.
+        return await runAction({ ...deps, startGateway: undefined }, action, payload);
+      }
       // The adapter independently checks only its client-file plan.
       context.expectedRevision = clientRevision;
       const catalogFile = context.modelCatalogPath!;

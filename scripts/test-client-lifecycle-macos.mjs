@@ -126,28 +126,55 @@ try {
     assert.throws(() => api.macTerminalCommand('/tmp/codex\nwhoami', f.home));
   });
   await check('Terminal pins custom and default config directories without exposing credentials or unrelated overrides', async () => {
-    for (const [agentId, binary, key, folder] of [['codex-cli', 'codex', 'CODEX_HOME', '.codex'], ['claude-code', 'claude', 'CLAUDE_CONFIG_DIR', '.claude']]) {
+    for (const [agentId, binary, key, folder] of [['codex-cli', 'codex', 'CODEX_HOME', '.codex'], ['claude-code', 'claude', 'CLAUDE_CONFIG_DIR', '.claude'], ['gemini-cli', 'gemini', 'GEMINI_CLI_HOME', '']]) {
       const f = fixture({ isolatedHome: () => undefined });
-      const command = path.join(f.home, binary); fs.writeFileSync(command, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+      const command = path.join(f.home, binary);
+      fs.writeFileSync(command, '#!/bin/sh\nprintf "%s\\n" "$HOME" "${CLAUDE_CONFIG_DIR-unset}" "${GEMINI_CLI_HOME-unset}"\n', { mode: 0o700 });
+      function checkNativeShell(commandLine, expected) {
+        if (process.platform === 'win32') return;
+        const result = spawnSync('/bin/sh', ['-c', commandLine], {
+          env: { HOME: '/stale/home', CLAUDE_CONFIG_DIR: '/stale/claude', GEMINI_CLI_HOME: '/stale/gemini' }, encoding: 'utf8',
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(result.stdout.trimEnd().split('\n'), expected);
+      }
       const target = await f.driver.resolveTarget(agentId, { kind: 'cli', name: binary, binaries: [binary] }, { installed: true, configured: false, command });
       const custom = path.join(f.home, "custom ' config; $(touch no) `id`");
-      f.host.configurationEnvironment = () => ({ [key]: custom, OPENAI_API_KEY: 'fixture-secret-api-key', ANTHROPIC_AUTH_TOKEN: 'fixture-secret-auth', GEMINI_CLI_HOME: '/unrelated/gemini' });
+      f.host.configurationEnvironment = () => ({ GEMINI_CLI_HOME: '/unrelated/gemini', [key]: custom, OPENAI_API_KEY: 'fixture-secret-api-key', ANTHROPIC_AUTH_TOKEN: 'fixture-secret-auth' });
       await f.driver.openTerminal(target, f.home);
       let request = JSON.parse(f.state.calls.at(-1).args.at(-1));
       assert.equal(request.command, api.macTerminalCommand(fs.realpathSync.native(command), f.home, { ...(agentId === 'claude-code' ? { HOME: f.home } : {}), [key]: custom }));
-      assert(!request.command.includes('fixture-secret')); assert(!request.command.includes('GEMINI_CLI_HOME'));
+      if (agentId === 'claude-code') checkNativeShell(request.command, [f.home, custom, '/stale/gemini']);
+      if (agentId === 'gemini-cli') checkNativeShell(request.command, ['/stale/home', '/stale/claude', custom]);
+      assert(!request.command.includes('fixture-secret')); assert(!request.command.includes('/unrelated/gemini'));
       f.host.configurationEnvironment = () => ({}); await f.driver.openTerminal(target, f.home);
       request = JSON.parse(f.state.calls.at(-1).args.at(-1));
       assert.equal(request.command, api.macTerminalCommand(fs.realpathSync.native(command), f.home, agentId === 'claude-code' ? { HOME: f.home, CLAUDE_CONFIG_DIR: undefined } : { [key]: path.join(f.home, folder) }));
       if (agentId === 'claude-code') {
+        assert(request.command.includes("-u 'CLAUDE_CONFIG_DIR'"));
+        checkNativeShell(request.command, [f.home, 'unset', '/stale/gemini']);
+      }
+      if (agentId === 'gemini-cli') {
+        checkNativeShell(request.command, ['/stale/home', '/stale/claude', f.home]);
+        f.host.isolatedHome = () => f.home;
+        f.host.configurationEnvironment = () => ({ GEMINI_CLI_HOME: custom });
+        await f.driver.openTerminal(target, f.home);
+        const isolatedCommand = JSON.parse(f.state.calls.at(-1).args.at(-1)).command;
+        assert.equal(isolatedCommand, api.macTerminalCommand(fs.realpathSync.native(command), f.home, { GEMINI_CLI_HOME: f.home }));
+        checkNativeShell(isolatedCommand, ['/stale/home', '/stale/claude', f.home]);
+        f.host.isolatedHome = () => undefined;
+      }
+      if (agentId === 'claude-code') {
         for (const isolated of [undefined, f.home]) {
-          f.host.isolatedHome = () => isolated; f.host.configurationEnvironment = () => ({ CLAUDE_CONFIG_DIR: isolated ? custom : path.join(f.home, '.claude') });
+          const defaultDir = path.join(f.home, '.claude');
+          f.host.isolatedHome = () => isolated; f.host.configurationEnvironment = () => ({ CLAUDE_CONFIG_DIR: isolated ? custom : defaultDir });
           await f.driver.openTerminal(target, f.home); const defaultRequest = JSON.parse(f.state.calls.at(-1).args.at(-1));
-          assert.equal(defaultRequest.command, api.macTerminalCommand(fs.realpathSync.native(command), f.home, { HOME: f.home, CLAUDE_CONFIG_DIR: undefined }));
+          assert.equal(defaultRequest.command, api.macTerminalCommand(fs.realpathSync.native(command), f.home, { HOME: f.home, CLAUDE_CONFIG_DIR: isolated ? undefined : defaultDir }));
+          checkNativeShell(defaultRequest.command, [f.home, isolated ? 'unset' : defaultDir, '/stale/gemini']);
           const adapterEnvironment = { HOME: f.home, USERPROFILE: f.home, ...(isolated ? { AURORA_CLIENT_HOME: isolated, CLAUDE_CONFIG_DIR: custom } : { CLAUDE_CONFIG_DIR: path.join(f.home, '.claude') }) };
           const adapterPaths = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(require(process.argv[1]).getAdapter("claude-code").configPaths()))', output], { env: adapterEnvironment, encoding: 'utf8', windowsHide: true });
           assert.equal(adapterPaths.status, 0, adapterPaths.stderr);
-          assert.deepEqual(JSON.parse(adapterPaths.stdout), [path.join(f.home, '.claude', 'settings.json'), path.join(f.home, '.claude.json')]);
+          assert.deepEqual(JSON.parse(adapterPaths.stdout), [path.join(defaultDir, 'settings.json'), path.join(isolated || defaultDir, '.claude.json')]);
         }
         f.host.isolatedHome = () => undefined;
         const customPaths = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(require(process.argv[1]).getAdapter("claude-code").configPaths()))', output], { env: { HOME: f.home, USERPROFILE: f.home, CLAUDE_CONFIG_DIR: custom }, encoding: 'utf8', windowsHide: true });

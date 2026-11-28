@@ -10,8 +10,11 @@ import { cliCandidates, desktopCandidates, type ClientPathContext } from '../cli
 import { CLAUDE_DESKTOP_PROFILE, claudeDesktopConfigFiles, claudeDesktopRestorePaths, resolveClaudeDesktopConfig } from '../claudeDesktopPaths.js';
 import { readOfficialCodexIdentity, codexCoexistBaseUrl, CODEX_COEXIST_BASE_PATH } from '../gateway/coexist.js';
 import { codexHistoryBasePath } from '../gateway/historyRoute.js';
-import { nativeDirectParameters } from './directConnection.js';
+import { nativeDirectCredentialIssue, nativeDirectParameters } from './directConnection.js';
+import { patchGeminiSettings, previewGeminiSettings } from './geminiSettings.js';
+import { providerAllowsAnonymous } from '../providerEndpoint.js';
 import { claudeDesktopModels, isClaudeDesktopModel } from './claudeDesktopModels.js';
+import { claudeGlobalConfigPath, usesClaudeCloudProvider } from './claudeCodeSettings.js';
 import { discoverHistoryProviderIds, detachManagedHistoryProviders, withHistoryProviderAliases, clearManagedHistoryTarget } from './historyProviders.js';
 import { isGatewayCatalogPath, readManagedGatewayModelCatalog } from './catalogStorage.js';
 import { applyPlan, restorePlan, backupPlanFiles, jsonObject, planned, plannedJson, readText, patchToml, patchEnv, redactConfig, digest, type PlannedFile } from './configFiles.js';
@@ -76,10 +79,18 @@ function desktopPath(names: string | readonly string[]): string | undefined {
 function codexConfig(): string { return path.join(envDir('CODEX_HOME', home('.codex')), 'config.toml'); }
 function claudeCodeConfig(): string { return path.join(envDir('CLAUDE_CONFIG_DIR', home('.claude')), 'settings.json'); }
 function claudeOnboardingConfig(): string {
-  const dir = envDir('CLAUDE_CONFIG_DIR', home('.claude'));
-  return path.resolve(dir) === path.resolve(home('.claude')) ? home('.claude.json') : path.join(dir, '.claude.json');
+  return claudeGlobalConfigPath(home(), envDir('CLAUDE_CONFIG_DIR', ''));
 }
-function claudeCodePaths(): string[] { return [claudeCodeConfig(), claudeOnboardingConfig()]; }
+function claudeCodePaths(): string[] {
+  const settings = claudeCodeConfig(), onboarding = claudeOnboardingConfig();
+  const paths = [settings, onboarding];
+  if (path.relative(home('.claude'), path.dirname(settings)) === '') {
+    // Earlier builds treated an explicit ~/.claude like an unset CLAUDE_CONFIG_DIR.
+    const alternate = onboarding === home('.claude.json') ? home('.claude', '.claude.json') : home('.claude.json');
+    if (fs.existsSync(alternate)) paths.push(alternate);
+  }
+  return paths;
+}
 let desktopExecutable: string | undefined;
 export function configureDesktopPath(value?: string): void { if (desktopExecutable !== value) { desktopExecutable = value; detectReset(); } }
 function desktopDetection() { return detectCodingDesktop(desktopExecutable); }
@@ -95,7 +106,7 @@ export function connectionParameters(ctx: ConnectContext, protocol: string): { b
   } else if (protocol === 'openai-chat' || protocol === 'openai-responses') {
     baseUrl += '/v1';
   }
-  const apiKey = ctx.mode === 'gateway' ? ctx.token || '' : ctx.provider.apiKeys.find(k => k.enabled && k.key)?.key || '';
+  const apiKey = ctx.mode === 'gateway' ? ctx.token || '' : ctx.provider.apiKeys.find(k => k.enabled && k.key.trim())?.key || '';
   if (ctx.mode === 'gateway' && !apiKey) throw new Error('本地网关令牌尚未生成，请先启动网关');
   if (/\r|\n/.test(apiKey) || /[\r\n\u0000]/.test(ctx.model)) throw new Error('密钥或模型名不能包含换行符');
   return { baseUrl, apiKey, model: ctx.mode === 'gateway' ? `${ctx.provider.id}/${ctx.model}` : ctx.model, ...(apiVersion ? { apiVersion } : {}) };
@@ -116,9 +127,14 @@ function validate(ctx: ConnectContext, adapter: AgentAdapter): void {
     if (!ctx.modelCatalogPath) throw new Error('缺少本地共存模型目录');
   }
   const providerHost = new URL(ctx.provider.baseUrl).hostname;
-  if (!officialChoice && !ctx.provider.apiKeys.some(k => k.enabled && k.key) && !['localhost', '127.0.0.1', '[::1]'].includes(providerHost)) throw new Error('请先填写并启用供应商 API Key');
+  const hasKey = ctx.provider.apiKeys.some(k => k.enabled && !!k.key.trim());
+  if (!officialChoice && !hasKey && !providerAllowsAnonymous(providerHost, ctx.provider.apiKeys)) throw new Error('请先填写并启用供应商 API Key');
   if (!ctx.provider.models.some(m => m.id === ctx.model)) throw new Error('此模型不在所选供应商的模型列表中');
   if (ctx.mode === 'direct' && ctx.provider.format !== adapter.protocol) throw new Error('直连模式要求供应商与客户端协议一致；请选择本地网关接入');
+  if (ctx.mode === 'direct') {
+    const credentialIssue = nativeDirectCredentialIssue(adapter.id, hasKey);
+    if (credentialIssue) throw new Error(credentialIssue);
+  }
   if (adapter.id === 'claude-desktop' && !isClaudeDesktopModel(ctx.model)) throw new Error('Claude Desktop 需要包含 Claude 型号的模型 ID 或供应商路由。请同步并选择兼容模型。');
   for (const [role, model] of Object.entries(ctx.modelMap || {})) {
     if (!['sonnet', 'opus', 'haiku'].includes(role) || !ctx.provider.models.some(m => m.id === model)) throw new Error('模型映射必须使用当前供应商已有的模型');
@@ -147,7 +163,10 @@ function makeAdapter(spec: AdapterSpec): AgentAdapter {
         if (ctx.permissionMode === 'full-access') base.warnings.push('已选择完全访问：客户端可执行命令和修改文件，操作前不再逐项请求批准。组织策略、工作区信任与客户端首次确认仍由客户端执行。');
         if (spec.support === 'manual') return { ...base, ok: true, message: spec.supportNote, manual: { ...connectionParameters(ctx, this.protocol), apiKey: '••••••••' } };
         const files = spec.plan!(ctx);
-        return { ...base, warnings: [...base.warnings, ...(spec.previewWarnings?.(ctx, files) || [])], ok: true, message: '将先备份现有配置，再应用以下变更。预览中的密钥已隐藏。', revision: planRevision(files), files: files.map(f => ({ ...f, before: redactConfig(f.before), after: redactConfig(f.after) })) };
+        return { ...base, warnings: [...base.warnings, ...(spec.previewWarnings?.(ctx, files) || [])], ok: true, message: '将先备份现有配置，再应用以下变更。预览中的密钥已隐藏。', revision: planRevision(files), files: files.map(file => {
+          const previewText = spec.id === 'gemini-cli' && path.basename(file.path) === 'settings.json' ? previewGeminiSettings : redactConfig;
+          return { ...file, before: previewText(file.before), after: previewText(file.after) };
+        }) };
       } catch (error) { return { ...base, ok: false, message: String((error as Error).message) }; }
     },
     connect(ctx) {
@@ -175,6 +194,11 @@ function makeAdapter(spec: AdapterSpec): AgentAdapter {
   return adapter;
 }
 
+function claudeApiKeyVariable(ctx: ConnectContext): 'ANTHROPIC_API_KEY' | 'ANTHROPIC_AUTH_TOKEN' {
+  return ctx.mode === 'direct' && new URL(ctx.provider.baseUrl).hostname === 'api.anthropic.com'
+    ? 'ANTHROPIC_API_KEY' : 'ANTHROPIC_AUTH_TOKEN';
+}
+
 const claudeCode = makeAdapter({
   id: 'claude-code', name: 'Claude Code', vendor: 'Anthropic', category: 'cli', support: 'automatic', protocol: 'anthropic',
   description: 'Anthropic 编程助手，支持国内外模型通过本地网关接入。', supportNote: '写入用户级 settings.json 的端点、密钥和模型；保留权限、MCP、插件等设置。',
@@ -185,30 +209,49 @@ const claudeCode = makeAdapter({
     const file = claudeCodeConfig(), settings = jsonObject(file), ep = connectionParameters(ctx, 'anthropic');
     if (settings.env && (typeof settings.env !== 'object' || Array.isArray(settings.env))) throw new Error('Claude Code env 必须是对象');
     if (settings.forceLoginMethod || settings.forceLoginOrgUUID) throw new Error('Claude Code 当前配置限制了官方或组织登录，可能阻止供应商 API 接入。请先在原客户端核对登录策略；原配置未修改');
-    if (['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'].some(key => ['1', 'true'].includes(String(settings.env?.[key]).toLowerCase()))) throw new Error('Claude Code 当前启用了云平台认证，无法同时使用供应商 API 接入。请先在原客户端关闭相应云平台模式；原配置未修改');
+    if (usesClaudeCloudProvider(settings.env)) throw new Error('Claude Code 当前启用了云平台认证，无法同时使用供应商 API 接入。请先在原客户端关闭相应云平台模式；原配置未修改');
     if (ctx.permissionMode === 'full-access') {
       if (settings.permissions && (typeof settings.permissions !== 'object' || Array.isArray(settings.permissions))) throw new Error('Claude Code permissions 必须是对象');
       if (settings.permissions?.disableBypassPermissionsMode === 'disable') throw new Error('Claude Code 当前配置禁止跳过权限确认，请先在原客户端检查权限策略；原配置未修改');
       settings.permissions = { ...(settings.permissions || {}), defaultMode: 'bypassPermissions' };
     }
-    settings.env = { ...(settings.env || {}), ANTHROPIC_BASE_URL: ep.baseUrl, ANTHROPIC_AUTH_TOKEN: ep.apiKey, ANTHROPIC_MODEL: ep.model };
-    delete settings.env.ANTHROPIC_API_KEY;
+    const keyVariable = claudeApiKeyVariable(ctx);
+    settings.env = { ...(settings.env || {}), ANTHROPIC_BASE_URL: ep.baseUrl, [keyVariable]: ep.apiKey, ANTHROPIC_MODEL: ep.model };
+    delete settings.env[keyVariable === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_AUTH_TOKEN' : 'ANTHROPIC_API_KEY'];
     for (const role of ['opus', 'sonnet', 'haiku']) { const model = ctx.modelMap?.[role] || ctx.model; settings.env[`ANTHROPIC_DEFAULT_${role.toUpperCase()}_MODEL`] = ctx.mode === 'gateway' ? `${ctx.provider.id}/${model}` : model; }
     const files: PlannedFile[] = [{ ...plannedJson(file, settings), ...(ctx.permissionMode === 'full-access' ? { permissionScope: { kind: 'claude-execution-v1' as const } } : {}) }], onboarding = claudeOnboardingConfig();
-    const previousOnboarding = ctx.previousBackup ? backupPlanFiles('claude-code', ctx.previousBackup, claudeCodePaths()).find(entry => entry.path === onboarding) : undefined;
-    if (previousOnboarding?.ownedJson && jsonObject(onboarding).hasCompletedOnboarding !== true) throw new Error('Claude 引导标记已被其他程序修改，请先核对后重新预览');
+    const previous = ctx.previousBackup ? backupPlanFiles('claude-code', ctx.previousBackup, claudeCodePaths()) : [];
+    const previousOnboarding = previous.filter(entry => path.basename(entry.path) === '.claude.json');
+    for (const entry of previousOnboarding) {
+      if (entry.ownedJson && jsonObject(entry.path).hasCompletedOnboarding !== true) throw new Error('Claude 引导标记已被其他程序修改，请先核对后重新预览');
+    }
     if (ctx.skipOnboarding) {
       const global = jsonObject(onboarding);
       if (global.hasCompletedOnboarding === true) files.push({ ...planned(onboarding, readText(onboarding)), ownedJson: 'claude-onboarding-v1' });
       else { global.hasCompletedOnboarding = true; files.push({ ...plannedJson(onboarding, global), ownedJson: 'claude-onboarding-v1' }); }
-    } else if (previousOnboarding) {
-      // Keep the first original in the transaction after turning off future
-      // onboarding changes. Native startup state is only reset by full restore.
-      files.push({ ...planned(onboarding, readText(onboarding)), ...(previousOnboarding.ownedJson ? { ownedJson: previousOnboarding.ownedJson } : {}) });
+    }
+    // Carry earlier managed markers through switches so full restore keeps their originals.
+    for (const entry of previousOnboarding) {
+      if (ctx.skipOnboarding && path.relative(onboarding, entry.path) === '') continue;
+      files.push({ ...planned(entry.path, readText(entry.path)), ...(entry.ownedJson ? { ownedJson: entry.ownedJson } : {}) });
     }
     return files;
   },
 });
+claudeCode.restorePaths = backup => backup
+  ? backupPlanFiles('claude-code', backup, claudeCodePaths()).map(entry => entry.path)
+  : claudeCodePaths();
+
+// Codex permits a catalog override on the built-in provider for ChatGPT hosts.
+// Its inference transport still comes from the top-level openai_base_url.
+function officialCodexCatalogUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || !/^https:\/\/[^/@\s\\]+(?:[/?#]|$)/.test(value)) return false;
+  try {
+    const { hostname, username, password } = new URL(value);
+    return !username && !password && (hostname === 'chat.openai.com' || /(?:^|\.)chatgpt(?:-staging)?\.com$/.test(hostname));
+  } catch { return false; }
+}
+
 export function codexPlan(ctx: ConnectContext): PlannedFile[] {
   const file = codexConfig(), ep = connectionParameters(ctx, 'openai-responses');
   const before = readText(file);
@@ -229,10 +272,10 @@ export function codexPlan(ctx: ConnectContext): PlannedFile[] {
   }
   if (coexist) {
     const profile = typeof current.profile === 'string' ? current.profiles?.[current.profile] : undefined;
-    if ([current.model_providers?.openai, profile?.model_providers?.openai].some(value => value && typeof value === 'object' && Object.keys(value).some(key => key !== 'name'))) {
+    if ([current.model_providers?.openai, profile?.model_providers?.openai].some(value => value && typeof value === 'object'
+      && Object.entries(value).some(([key, setting]) => key !== 'name' && !(key === 'model_catalog_url' && officialCodexCatalogUrl(setting))))) {
       throw new Error('当前配置重定义了内置 openai 供应商。请先在原客户端移除该覆盖或改名为独立供应商，再开启官方账号共存；也可继续使用 API 模式。');
     }
-    if (!process.env.AURORA_CLIENT_HOME && process.env.OPENAI_BASE_URL) throw new Error('当前进程存在 OPENAI_BASE_URL 环境覆盖，请先清除该变量并重启云桥，再启用共存模式。');
   }
   const selection = { model: ep.model, model_provider: coexist ? 'openai' : 'yunqiao' };
   const endpoint = codexCoexistBaseUrl(Number(new URL(ctx.gatewayUrl).port) || 80);
@@ -264,6 +307,9 @@ export function codexPlan(ctx: ConnectContext): PlannedFile[] {
   }
   const detached = detachManagedHistoryProviders(before);
   let text = patchToml(detached.text, '', routing);
+  // The reserved OpenAI entry accepts an official model_catalog_url, but
+  // a custom display name in the same table fails native config validation.
+  if (coexist && current.model_providers?.openai?.name) text = patchToml(text, 'model_providers.openai', { name: null });
   if (typeof current.profile === 'string') {
     if (!current.profiles?.[current.profile] || typeof current.profiles[current.profile] !== 'object') throw new Error('当前 Codex profile 不存在，请先检查原客户端配置');
     const profile = current.profiles[current.profile];
@@ -279,9 +325,10 @@ export function codexPlan(ctx: ConnectContext): PlannedFile[] {
       if (profile.model_auto_compact_token_limit !== undefined) values.model_auto_compact_token_limit = null;
     }
     text = patchToml(text, `profiles.${JSON.stringify(current.profile)}`, values);
+    if (coexist && profile.model_providers?.openai?.name) text = patchToml(text, `profiles.${JSON.stringify(current.profile)}.model_providers.openai`, { name: null });
   }
   if (!coexist) {
-    const transport = { name: '云桥 AI', base_url: ep.baseUrl, wire_api: 'responses', experimental_bearer_token: ep.apiKey, env_key: null, requires_openai_auth: false, stream_idle_timeout_ms: 300000 };
+    const transport = { name: '云桥 AI', base_url: ep.baseUrl, wire_api: 'responses', experimental_bearer_token: ep.apiKey || null, env_key: null, requires_openai_auth: false, stream_idle_timeout_ms: 300000 };
     text = patchToml(text, 'model_providers.yunqiao', transport);
     // An existing active-profile provider is merged over the root provider by
     // supporting clients. Keep its managed transport in sync so it cannot
@@ -301,7 +348,7 @@ export function codexPlan(ctx: ConnectContext): PlannedFile[] {
       ? new URL(endpoint).origin + codexHistoryBasePath(`${ctx.provider.id}/${ctx.model}`, 'coexist')
       : ctx.gatewayUrl.replace(/\/+$/, '') + codexHistoryBasePath(`${ctx.provider.id}/${ctx.model}`);
     const aliasTransport: Record<string, string | number | boolean> = coexist ? { name: '云桥历史兼容', base_url: aliasBaseUrl, wire_api: 'responses', requires_openai_auth: true, stream_idle_timeout_ms: 300000 }
-      : { name: '云桥历史兼容', base_url: aliasBaseUrl, wire_api: 'responses', experimental_bearer_token: ep.apiKey, requires_openai_auth: false, stream_idle_timeout_ms: 300000 };
+      : { name: '云桥历史兼容', base_url: aliasBaseUrl, wire_api: 'responses', ...(ep.apiKey ? { experimental_bearer_token: ep.apiKey } : {}), requires_openai_auth: false, stream_idle_timeout_ms: 300000 };
     text = withHistoryProviderAliases(text, [...detached.ids, ...ids], aliasTransport, true);
   } catch { text = clearManagedHistoryTarget(text); }
   return [{ ...planned(file, text), ...(ctx.permissionMode === 'full-access' ? { permissionScope: { kind: 'codex-execution-v1' as const, ...(typeof current.profile === 'string' ? { profile: current.profile } : {}) } } : {}) }];
@@ -369,7 +416,7 @@ const claudeDesktop = makeAdapter({
     if (meta.entries && !Array.isArray(meta.entries)) throw new Error('Claude Desktop profile 索引 entries 不是数组');
     meta.entries = (meta.entries || []).filter((x: any) => x?.id !== DESKTOP_PROFILE); meta.entries.push({ id: DESKTOP_PROFILE, name: '云桥 AI' }); meta.appliedId = DESKTOP_PROFILE;
     const profile = jsonObject(profileFile);
-    Object.assign(profile, { inferenceProvider: 'gateway', inferenceGatewayBaseUrl: ctx.mode === 'gateway' ? ep.baseUrl + '/claude-desktop' : ep.baseUrl, inferenceGatewayAuthScheme: 'bearer', inferenceGatewayApiKey: ep.apiKey,
+    Object.assign(profile, { inferenceProvider: 'gateway', inferenceCredentialKind: 'static', inferenceGatewayBaseUrl: ctx.mode === 'gateway' ? ep.baseUrl + '/claude-desktop' : ep.baseUrl, inferenceGatewayAuthScheme: claudeApiKeyVariable(ctx) === 'ANTHROPIC_API_KEY' ? 'x-api-key' : 'bearer', inferenceGatewayApiKey: ep.apiKey,
       inferenceModels: claudeDesktopModels(ctx.provider, ctx.model) });
     return [plannedJson(normal, main), plannedJson(thirdParty, third), plannedJson(metaFile, meta), plannedJson(profileFile, profile)];
   },
@@ -382,14 +429,20 @@ claudeDesktop.detect = () => {
     evidence: [selected.reason, ...selected.candidates.filter(candidate => candidate.existing).map(candidate => candidate.root)],
     ...(selected.status !== 'resolved' ? { detectionError: selected.reason } : {}) };
 };
+function geminiConfigPaths(): string[] {
+  const directory = path.join(envDir('GEMINI_CLI_HOME', home()), '.gemini');
+  return [path.join(directory, 'settings.json'), path.join(directory, '.env')];
+}
 const geminiCli = makeAdapter({
   id: 'gemini-cli', name: 'Gemini CLI', vendor: 'Google', category: 'cli', support: 'automatic', protocol: 'gemini', description: 'Google 终端助手，通过 Gemini 原生 API 或网关使用模型。',
-  supportNote: '写入官方支持的用户级 .gemini/.env 与 API Key 身份设置。', docsUrl: 'https://geminicli.com/docs/reference/configuration/', command: 'gemini', paths: () => [home('.gemini', 'settings.json'), home('.gemini', '.env')],
-  warnings: ['当前终端已有环境变量或项目 .env 可能覆盖用户级 .env；接入后请新开终端。'],
+  supportNote: '配置位于 GEMINI_CLI_HOME 或用户主目录下的 .gemini 文件夹。settings.json 预览显示认证方式与模型名称。', docsUrl: 'https://geminicli.com/docs/reference/configuration/', command: 'gemini', paths: geminiConfigPaths,
+  warnings: ['首次使用请在熟悉的项目目录交互运行 gemini，按客户端提示确认工作区信任，再开始对话。Gemini CLI 在未信任的目录会跳过用户级 .gemini/.env。', '已有终端变量优先生效。Gemini 只读取首个匹配的 .env 文件，项目 .env 或 .gemini/.env 可能覆盖用户级配置。'],
   plan(ctx) {
-    const [file, envFile] = [home('.gemini', 'settings.json'), home('.gemini', '.env')], settings = jsonObject(file), ep = connectionParameters(ctx, 'gemini');
-    settings.security = { ...(settings.security || {}), auth: { ...(settings.security?.auth || {}), selectedType: 'gemini-api-key' } }; settings.model = { ...(settings.model || {}), name: ep.model };
-    return [plannedJson(file, settings), planned(envFile, patchEnv(readText(envFile), { GOOGLE_GEMINI_BASE_URL: ep.baseUrl, GOOGLE_GENAI_API_VERSION: ep.apiVersion!, GEMINI_API_KEY: ep.apiKey, GEMINI_MODEL: ep.model }))];
+    const [settings, env] = geminiConfigPaths().map(file => planned(file, ''));
+    const ep = connectionParameters(ctx, 'gemini');
+    settings.after = patchGeminiSettings(settings.existed ? settings.before : '{}\n', ep.model);
+    env.after = patchEnv(env.before, { GOOGLE_GEMINI_BASE_URL: ep.baseUrl, GOOGLE_GENAI_API_VERSION: ep.apiVersion!, GEMINI_API_KEY: ep.apiKey, GEMINI_MODEL: ep.model });
+    return [settings, env];
   },
 });
 const manualSpecs: AdapterSpec[] = [
@@ -420,6 +473,12 @@ export function exportEnvScript(ctx: ConnectContext, protocol: string, platform:
   const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
   const prefix = platform === 'win32' ? '$env:' : 'export ';
   const literal = platform === 'win32' ? (value: string) => `'${value.replace(/'/g, "''")}'` : quote;
-  const values: Record<string, string> = protocol === 'anthropic' ? { ANTHROPIC_BASE_URL: ep.baseUrl, ANTHROPIC_AUTH_TOKEN: ep.apiKey, ANTHROPIC_MODEL: ep.model } : protocol === 'gemini' ? { GOOGLE_GEMINI_BASE_URL: ep.baseUrl, GOOGLE_GENAI_API_VERSION: ep.apiVersion!, GEMINI_API_KEY: ep.apiKey, GEMINI_MODEL: ep.model } : { OPENAI_BASE_URL: ep.baseUrl, OPENAI_API_KEY: ep.apiKey, OPENAI_MODEL: ep.model };
-  return [`# 云桥 AI · 当前终端环境变量 (${nowIso()})`, ...Object.entries(values).map(([key, value]) => `${prefix}${key}=${literal(value)}`)].join('\n');
+  const keyVariable = protocol === 'anthropic' ? claudeApiKeyVariable(ctx) : undefined;
+  const values: Record<string, string> = keyVariable ? { ANTHROPIC_BASE_URL: ep.baseUrl, [keyVariable]: ep.apiKey, ANTHROPIC_MODEL: ep.model } : protocol === 'gemini' ? { GOOGLE_GEMINI_BASE_URL: ep.baseUrl, GOOGLE_GENAI_API_VERSION: ep.apiVersion!, GEMINI_API_KEY: ep.apiKey, GEMINI_MODEL: ep.model } : { OPENAI_BASE_URL: ep.baseUrl, OPENAI_API_KEY: ep.apiKey, OPENAI_MODEL: ep.model };
+  const lines = [`# 云桥 AI · 当前终端环境变量 (${nowIso()})`];
+  if (keyVariable) {
+    const previous = keyVariable === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_AUTH_TOKEN' : 'ANTHROPIC_API_KEY';
+    lines.push(platform === 'win32' ? `Remove-Item Env:${previous} -ErrorAction SilentlyContinue` : `unset ${previous}`);
+  }
+  return [...lines, ...Object.entries(values).map(([key, value]) => `${prefix}${key}=${literal(value)}`)].join('\n');
 }

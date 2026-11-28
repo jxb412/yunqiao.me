@@ -15,8 +15,8 @@ export class UnverifiedOriginalBackupError extends Error {
   constructor() { super('旧版备份缺少原始配置校验记录，无法确认首次接入前的权限；未单独恢复权限。请先核对原始备份并在客户端中手动设置权限。'); }
 }
 export function readText(file: string): string {
-  if (!fs.existsSync(file)) return '';
-  const stat = fs.lstatSync(file);
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (!stat) return '';
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`配置路径不是普通文件：${file}`);
   if (stat.size > 4 * 1024 * 1024) throw new Error(`配置文件超过 4 MB，请手动检查：${file}`);
   return fs.readFileSync(file, 'utf8');
@@ -58,6 +58,14 @@ function checkBackupFile(root: string, file: string): void {
   if (!isWithin(root, file)) throw new Error('备份路径不属于此客户端目录');
   checkBackupDirectory(root);
   if (fs.existsSync(file) && !isWithin(fs.realpathSync(root), fs.realpathSync(file))) throw new Error('备份文件实际位置不属于此客户端目录');
+}
+function sameConfigPath(left: string, right: string): boolean {
+  if (path.resolve(left) === path.resolve(right)) return true;
+  if (process.platform !== 'win32' || path.relative(left, right) !== '') return false;
+  // NTFS can also contain case-sensitive directories. Accept the spelling
+  // change only when Windows resolves both to the very same existing file.
+  try { return fs.realpathSync.native(left) === fs.realpathSync.native(right); }
+  catch { return false; }
 }
 function validateOwnership(agentId: string, file: { path: string; ownedJson?: OwnedJson }, allowed: string[]): void {
   if (file.ownedJson === undefined) return;
@@ -165,8 +173,10 @@ function loadManifest(file: string, agentId: string, allowed: string[]): BackupM
   if (!manifest || manifest.format !== 'aurora-client-backup-v1' || manifest.agentId !== agentId || !Array.isArray(manifest.files) || !manifest.files.length)
     throw new Error('备份格式不匹配；请手动检查旧版备份');
   for (const e of manifest.files) {
-    if (!e || typeof e.path !== 'string' || !/^[a-f0-9]{64}$/.test(e.installedHash) || (e.originalHash !== undefined && (e.backup === null || !/^[a-f0-9]{64}$/.test(e.originalHash))) || (e.backup !== null && typeof e.backup !== 'string') || !allowed.some(p => path.resolve(p) === path.resolve(e.path)) || (e.backup !== null && !isWithin(root, e.backup)))
+    const currentPath = typeof e?.path === 'string' ? allowed.find(file => sameConfigPath(file, e.path)) : undefined;
+    if (!currentPath || !/^[a-f0-9]{64}$/.test(e.installedHash) || (e.originalHash !== undefined && (e.backup === null || !/^[a-f0-9]{64}$/.test(e.originalHash))) || (e.backup !== null && typeof e.backup !== 'string') || (e.backup !== null && !isWithin(root, e.backup)))
       throw new Error('备份包含不属于此客户端的文件');
+    e.path = currentPath;
     if (e.codexRuntimeHash !== undefined && (agentId !== 'codex-cli' || path.basename(e.path) !== 'config.toml' || !/^[a-f0-9]{64}$/.test(e.codexRuntimeHash))) throw new Error('运行时配置校验记录无效');
     if (e.claudePreferencesHash !== undefined && (!isClaudePreferencesFile(agentId, e.path, allowed) || !/^[a-f0-9]{64}$/.test(e.claudePreferencesHash))) throw new Error('Claude 桌面偏好校验记录无效');
     if (e.originalAbsent !== undefined && (e.originalAbsent !== true || e.backup !== null)) throw new Error('备份中的原始配置不存在记录无效');
@@ -314,6 +324,7 @@ export function restorePlan(agentId: string, backup: string | undefined, allowed
     for (const f of before) {
       attempted = f.entry.path;
       if (!fs.existsSync(f.entry.path) || readText(f.entry.path) !== f.current) throw new Error('恢复过程中配置被其他程序修改');
+      if (f.restored === f.current) continue;
       if (f.restored === null) fs.unlinkSync(f.entry.path);
       else atomicWrite(f.entry.path, f.restored, { existed: true, content: f.current });
       restored.push(f);

@@ -126,14 +126,13 @@ try {
     fs.mkdirSync(childDirectory);
     if (mode === 'child') childDirectories.push(childDirectory);
     const selected = path.join(caseDirectory, "应用 'literal' &", 'ChatGPT.exe');
-    const started = performance.now();
     let reply, error;
     try {
       reply = await api.runFixture({ executable: selected, port: 9333, packagedPath: false, mode,
         metadataFile, childDirectory, unicodeValue: '中文结果', expectedExecutable: selected,
         expectedCodexHome: originalCodexHome ?? null });
     } catch (caught) { error = caught; }
-    const elapsedMs = performance.now() - started;
+    const settledAt = Date.now();
     assert(fs.existsSync(metadataFile), 'Private PowerShell fixture must run before verifying its result');
     const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
     assert.equal(path.dirname(metadata.scriptFile), path.dirname(metadata.resultFile));
@@ -144,7 +143,7 @@ try {
     assert.equal(path.basename(metadata.scriptFile), 'launch.ps1');
     assert(!fs.existsSync(helperDirectory), 'Helper script, result and private directory must be removed on settlement');
     assert.deepEqual(fs.readdirSync(privateTemp), [], 'No helper transport files may be left behind');
-    return { reply, error, elapsedMs, metadata, childDirectory };
+    return { reply, error, settledAt, metadata, childDirectory };
   }
 
   let successful;
@@ -175,9 +174,11 @@ try {
     try {
       assert.ifError(result.error);
       assert.deepEqual(result.reply, { kind: 'activated', pid: 4242 });
-      assert(fs.existsSync(path.join(result.childDirectory, 'ready')));
+      const ready = fs.statSync(path.join(result.childDirectory, 'ready'));
       assert(!fs.existsSync(path.join(result.childDirectory, 'finished')), 'Helper must not wait for child stdio EOF');
-      assert(result.elapsedMs < 7000, `Helper unexpectedly waited ${Math.round(result.elapsedMs)} ms`);
+      // Measure the handoff after the child is ready, separately from starting two PowerShell processes.
+      const handoffMs = result.settledAt - ready.mtimeMs;
+      assert(handoffMs < 7000, `Helper waited ${Math.round(handoffMs)} ms after child readiness`);
     } finally {
       fs.writeFileSync(path.join(result.childDirectory, 'stop'), 'stop');
       const deadline = performance.now() + 3000;

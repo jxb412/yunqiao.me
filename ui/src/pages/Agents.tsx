@@ -9,7 +9,7 @@ import DesktopSetupRecovery from '../components/DesktopSetupRecovery';
 import ContextCompactHint from '../components/ContextCompactHint';
 import ClientConnectionOverview from '../components/ClientConnectionOverview';
 import { applyContextDefaults } from '../../../src/core/modelContext';
-import { nativeDirectParameters } from '../../../src/core/agents/directConnection';
+import { nativeDirectCredentialIssue, nativeDirectParameters } from '../../../src/core/agents/directConnection';
 import { isClaudeDesktopModel } from '../../../src/core/agents/claudeDesktopModels';
 import type { PageProps } from '../App';
 import { Btn, Empty, Field, Ico, Modal, useToast } from '../components/ui';
@@ -86,7 +86,7 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
   const officialProvider: Provider | undefined = officialAvailable ? { id: 'official', name: 'ChatGPT 官方账号', format: 'openai-responses', baseUrl: 'https://chatgpt.com/backend-api/codex', apiKeys: [], models: officialModels, enabled: officialModels.length > 0, priority: 0, createdAt: '', updatedAt: '' } : undefined;
   const choices = [...(officialProvider ? [officialProvider] : []), ...state.providers];
   const [step, setStep] = useState(0);
-  const [providerId, setProviderId] = useState(previous?.providerId || choices.find(p => p.enabled)?.id || '');
+  const [providerId, setProviderId] = useState(() => choices.find(p => p.enabled && p.id === previous?.providerId)?.id || choices.find(p => p.enabled)?.id || '');
   const [authMode, setAuthMode] = useState<'api' | 'coexist'>(previous?.authMode || (previous?.mode !== 'direct' && officialAvailable && officialModels.length > 0 ? 'coexist' : 'api'));
   const [mode, setMode] = useState<'gateway' | 'direct'>(previous?.mode === 'direct' ? 'direct' : 'gateway');
   const previouslyManaged = !!(previous?.connected || previous?.pendingReapply);
@@ -119,7 +119,7 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
   const providerModels = provider?.models || [];
   const availableModels = desktopClaude ? providerModels.filter(m => isClaudeDesktopModel(m.id)) : providerModels;
   const excludedModels = providerModels.length - availableModels.length;
-  const catalogSelection = !desktopClaude || availableModels.some(m => m.id === model) ? model : '';
+  const catalogSelection = availableModels.some(m => m.id === model) ? model : '';
   const chosenModel = manualModel ? model : catalogSelection || availableModels[0]?.id || '';
   const modelIssue = desktopClaude && chosenModel && !isClaudeDesktopModel(chosenModel) ? 'Claude Desktop 需要包含 Claude 型号的模型 ID 或供应商路由。' : '';
   const selectedModel = provider?.models.find(m => m.id === chosenModel);
@@ -138,7 +138,7 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
     : Object.keys(provider.headers || {}).length ? '此供应商有自定义请求头，当前直连配置不会写入这些请求头，请使用本地网关。'
     : provider.proxy?.trim() ? '此供应商使用独立代理，当前直连配置不会写入代理设置，请使用本地网关。'
     : state.settings.proxy?.trim() ? '云桥已设置网络代理，当前直连配置不会写入代理设置，请使用本地网关。'
-    : directEndpointIssue;
+    : directEndpointIssue || nativeDirectCredentialIssue(agent.id, provider.apiKeys.some(key => key.enabled && !!key.key.trim()));
   const connectionMode = directIssue ? 'gateway' : mode;
   const desktopModelHint = 'Claude Desktop 的模型菜单会显示兼容的 Claude 型号，所选默认模型排在首位。'
     + (excludedModels ? ` 供应商目录中另有 ${excludedModels} 项未识别为 Claude 型号。` : '');
@@ -232,7 +232,11 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
       {result.history.backupPath && <details><summary>{result.history.status === 'completed' ? '查看历史备份位置' : '查看历史处理记录位置'}</summary><p className="mono muted">{result.history.backupPath}</p></details>}
     </div></details>}{payload.authMode === 'coexist' && <p>重启客户端后，在模型菜单选择“官方”或对应供应商。切换服务建议新建会话，避免不同供应商的加密上下文不兼容。</p>}<div className="review-summary"><b>{provider?.name}</b><span>→</span><code>{chosenModel}</code></div>{result.path && <p className="mono muted">{result.path}</p>}</div> : <>
       {step === 0 && <>
-        {codex && <div className="notice"><Ico name="user" size={18} /><div className="grow"><b>官方账号与第三方模型</b><p>{officialAvailable ? '已检测到官方登录。共存模式保留账号身份，并在同一模型菜单中显示官方与第三方模型。' : state.codexCoexist?.identity.message || '登录官方客户端后，可在这里开启账号与第三方模型共存。'}</p>{officialAvailable && <label className="checkbox-label"><input type="checkbox" aria-label="保留官方账号并与第三方模型共存" checked={authMode === 'coexist' || providerId === 'official'} disabled={providerId === 'official'} onChange={e => { setAuthMode(e.target.checked ? 'coexist' : 'api'); if (e.target.checked) setMode('gateway'); clearSelectionFeedback(); }} />保留官方账号并与第三方模型共存</label>}<p className="hint">{authMode === 'coexist' || providerId === 'official' ? '共存模式保留官方账号身份；第三方服务仅使用你配置的供应商密钥。' : 'API 模式保留官方登录文件，但桌面账号显示可能变化，官方聊天及云功能可能暂不可用；需要这些功能时，请使用共存模式。'}</p></div></div>}
+        {codex && <div className="notice"><Ico name="user" size={18} /><div className="grow"><b>官方账号与第三方模型</b>
+          <p>{officialAvailable ? '已检测到官方登录。共存模式保留账号身份，并在同一模型菜单中显示官方与第三方模型。' : state.codexCoexist?.identity.message || '登录官方客户端后，可在这里开启账号与第三方模型共存。'}</p>
+          {(officialAvailable || previous?.authMode === 'coexist' || authMode === 'coexist') && <label className="checkbox-label"><input type="checkbox" aria-label="保留官方账号并与第三方模型共存" checked={authMode === 'coexist' || providerId === 'official'} disabled={providerId === 'official' || ((!officialAvailable || !officialModels.length) && authMode !== 'coexist')} onChange={e => { setAuthMode(e.target.checked ? 'coexist' : 'api'); if (e.target.checked) setMode('gateway'); clearSelectionFeedback(); }} />保留官方账号并与第三方模型共存</label>}
+          <p className="hint">{(!officialAvailable || !officialModels.length) && authMode === 'coexist' ? '要继续共存，请先在官方客户端登录并加载模型。要使用供应商 API，请取消勾选。' : authMode === 'coexist' || providerId === 'official' ? '共存模式保留官方账号身份；第三方服务仅使用你配置的供应商密钥。' : 'API 模式保留官方登录文件，但桌面账号显示可能变化，官方聊天及云功能可能暂不可用；需要这些功能时，请使用共存模式。'}</p>
+        </div></div>}
         {codex && authMode === 'coexist' && state.codexCoexist?.warnings.map((message, i) => <div className="notice warning" key={i}>{message}</div>)}
         {!window.aurora && !state.providers.some(p => p.enabled) && <div className="notice">请先在电脑桌面端添加并启用供应商，再从这里选择客户端连接。</div>}
         <div className="wizard-toggle"><button className={!creating ? 'selected' : ''} disabled={!choices.length} onClick={() => setCreating(false)}>使用已有供应商</button><button className={creating ? 'selected' : ''} disabled={!window.aurora} onClick={() => setCreating(true)}><Ico name="plus" size={14} />添加供应商</button></div>
@@ -273,6 +277,8 @@ function ConnectWizard({ agent, state, reload, onClose }: { agent: AgentCatalogI
           </>}
         </details>}
         {preview.warnings?.map((w: string, i: number) => <div className="notice warning" key={i}>{w}</div>)}
+        {support === 'automatic' && preview.selection.mode === 'gateway' && state.gateway?.running === false &&
+          <p className="hint">本地网关当前已停止，保存此连接时会尝试启动网关。</p>}
         {agent.supportNote && <p className="muted">{agent.supportNote}</p>}
         {preview.files?.map((f: any) => <details className="config-preview" key={f.path} open><summary>{f.existed ? '修改' : '新建'} · {f.path}</summary><div className="preview-columns"><div><label>当前配置</label><pre>{f.before || '此文件尚不存在'}</pre></div><div><label>应用后</label><pre>{f.after}</pre></div></div></details>)}
         {support === 'manual' && <ManualClientGuide agent={agent} preview={preview} selection={payload} platform={state.platform} modelContextWindow={provider?.models.find(m => m.id === chosenModel)?.contextWindow} />}

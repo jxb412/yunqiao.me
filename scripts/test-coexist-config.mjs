@@ -268,7 +268,8 @@ try {
   write(configFile, originalConfig);
 
   const payload = { agentId: 'codex-cli', providerId: supplier.id, model: 'relay-model', authMode: 'coexist' };
-  const dangerousOverrides = ['base_url = "https://override.invalid/v1"', 'env_key = "FIXTURE_OPENAI_KEY"', 'experimental_bearer_token = "fixture-openai-override-secret"'];
+  const dangerousOverrides = ['base_url = "https://override.invalid/v1"', 'env_key = "FIXTURE_OPENAI_KEY"', 'experimental_bearer_token = "fixture-openai-override-secret"',
+    'model_catalog_url = "https://chatgpt.com.fixture.invalid/models"', 'model_catalog_url = "http://chatgpt.com/models"'];
   for (const table of ['model_providers.openai', 'profiles."work.v2".model_providers.openai']) {
     for (const override of dangerousOverrides) {
       const configuration = originalConfig + `\n[${table}]\n${override}\n`;
@@ -281,9 +282,24 @@ try {
     }
   }
   check('root and active-profile built-in OpenAI endpoint or credential overrides fail closed', () => {});
-  write(configFile, originalConfig + '\n[model_providers.openai]\nname = "Official display name"\n');
-  const harmlessOverride = await api.runAction(deps, 'agent.preview', payload);
-  check('display-name-only OpenAI customization still permits a coexistence preview', () => { assert(harmlessOverride.ok, harmlessOverride.message); assert.equal(read(authFile), authBefore); });
+  for (const table of ['model_providers.openai', 'profiles."work.v2".model_providers.openai']) {
+    for (const catalog of ['', 'https://chatgpt.com/backend-api/codex/models']) {
+      const configuration = originalConfig + `\n[${table}]\nname = "OpenAI"\n` + (catalog ? `model_catalog_url = "${catalog}"\n` : '');
+      write(configFile, configuration);
+      const preview = await api.runAction(deps, 'agent.preview', payload);
+      assert(preview.ok, preview.message);
+      const applied = await api.runAction(deps, 'agent.connect', { ...payload, revision: preview.revision });
+      assert(applied.ok, applied.message);
+      const config = parseNativeToml(read(configFile));
+      const builtin = table.startsWith('profiles') ? config.profiles['work.v2'].model_providers.openai : config.model_providers.openai;
+      assert.equal(builtin.name, undefined);
+      assert.equal(builtin.model_catalog_url, catalog || undefined);
+      const restored = await api.runAction(deps, 'agent.disconnect', { agentId: payload.agentId }); assert(restored.ok, restored.message);
+      assert.equal(read(configFile), configuration); assert.equal(read(authFile), authBefore);
+    }
+  }
+  fs.unlinkSync(catalogFile);
+  check('coexistence drops the unsupported OpenAI display-name override, retains the official catalog and restores the original', () => {});
 
   const badToml = '[model_providers.fixture]\nexperimental_bearer_token = "fixture-malformed-secret" trailing-invalid\n';
   assert.throws(() => parseNativeToml(badToml), error => String(error).includes('fixture-malformed-secret'));
@@ -295,10 +311,19 @@ try {
   check('invalid TOML never discloses nearby secrets through local or remote error messages', () => { assert.equal(read(configFile), badToml); assert.equal(read(authFile), authBefore); });
   write(configFile, originalConfig);
 
-  const childEnvironment = { ...process.env, CODEX_HOME: codexDir, OPENAI_BASE_URL: 'https://fixture-environment-override.invalid/private-endpoint' };
-  delete childEnvironment.AURORA_CLIENT_HOME;
+  const childEnvironment = { HOME: clientHome, USERPROFILE: clientHome, CODEX_HOME: codexDir, CODEX_SQLITE_HOME: codexDir,
+    TEMP: scratch, TMP: scratch, SystemRoot: process.env.SystemRoot || '', WINDIR: process.env.WINDIR || '',
+    OPENAI_BASE_URL: 'https://fixture-environment-override.invalid/private-endpoint' };
   const child = spawnSync(process.execPath, ['-e', `const api=require(process.argv[1]);const context=JSON.parse(process.argv[2]);const adapter=api.getAdapter('codex-cli');process.stdout.write(JSON.stringify([adapter.preview(context),adapter.connect(context)]));`, bundle, JSON.stringify({ provider: store.getProvider(supplier.id), model: 'relay-model', mode: 'gateway', gatewayUrl: deps.gatewayUrl(), token: store.getSettings().gatewayToken, authMode: 'coexist', modelCatalogPath: catalogFile })], { env: childEnvironment, encoding: 'utf8' });
-  check('a real process endpoint override blocks coexistence without exposing its value', () => { assert.equal(child.status, 0, child.stderr); const rejected = JSON.parse(child.stdout); assert(rejected.every(result => !result.ok && result.message.includes('OPENAI_BASE_URL'))); assert(!child.stdout.includes('fixture-environment-override.invalid')); assert.equal(read(configFile), originalConfig); assert.equal(read(authFile), authBefore); });
+  check('an ambient OPENAI_BASE_URL permits applying the explicit Codex endpoint', () => {
+    assert.equal(child.status, 0, child.stderr);
+    const [preview, applied] = JSON.parse(child.stdout);
+    assert(preview.ok, preview.message); assert(applied.ok, applied.message);
+    assert(!child.stdout.includes('fixture-environment-override.invalid'));
+    assert.equal(parseNativeToml(read(configFile)).openai_base_url, api.codexCoexistBaseUrl(3425));
+    assert(api.getAdapter('codex-cli').disconnect(applied.backup).ok);
+    assert.equal(read(configFile), originalConfig); assert.equal(read(authFile), authBefore);
+  });
 
   const cacheBefore = read(cacheFile);
   write(cacheFile, '{"models":[]}');

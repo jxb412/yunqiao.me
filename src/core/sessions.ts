@@ -22,7 +22,7 @@ function sessionRoots(): SessionRoot[] {
     { dir: path.join(clientDir('CLAUDE_CONFIG_DIR', home('.claude')), 'projects'), agent: 'Claude Code' },
     { dir: path.join(clientDir('CODEX_HOME', home('.codex')), 'sessions'), agent: 'Codex', archived: false },
     { dir: path.join(clientDir('CODEX_HOME', home('.codex')), 'archived_sessions'), agent: 'Codex', archived: true },
-    { dir: home('.gemini', 'tmp'), agent: 'Gemini CLI' },
+    { dir: path.join(clientDir('GEMINI_CLI_HOME', home()), '.gemini', 'tmp'), agent: 'Gemini CLI' },
     { dir: path.join(codeBuddy, 'projects'), agent: 'CodeBuddy', codeBuddyProjects: true },
     { dir: path.join(codeBuddy, 'sessions'), agent: 'CodeBuddy' },
   ];

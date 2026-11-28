@@ -28,6 +28,8 @@ try {
   const bundle = path.join(scratch, 'core.cjs');
   await build({ stdin: { contents: [
     "export * from './src/core/store/index.ts';", "export * from './src/core/actions.ts';", "export * from './src/core/agents/adapters.ts';",
+    "export { Router } from './src/core/gateway/router.ts';", "export { nativeDirectParameters } from './src/core/agents/directConnection.ts';",
+    "export { buildUpstreamHttp, parseClientRequest } from './src/core/protocol/index.ts';",
   ].join('\n'), resolveDir: workspace, loader: 'ts' }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
   for (const [input, output] of [['src/core/readOnlyWorker.ts', 'read-only-worker.cjs'], ['src/core/agents/detectionWorker.ts', 'detection-worker.cjs']]) {
     await build({ entryPoints: [path.join(workspace, input)], outfile: path.join(scratch, output), bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
@@ -50,8 +52,57 @@ try {
     const deps = { store, dataDir: store.dir, gatewayStatus: () => ({ running: true }), gatewayUrl: () => 'http://127.0.0.1:3425',
       historyContext: { home, sqliteHome: home, blockingProcesses: async () => [] } };
     const call = (action, patch = {}) => api.runAction(deps, action, { agentId: 'codex-cli', providerId: provider.id, model: 'model-one', authMode: 'coexist', ...patch });
-    return { root, client, store, provider, config, auth, authBytes, catalog, call };
+    return { root, client, store, provider, config, auth, authBytes, catalog, deps, call };
   }
+  await check('Applying a gateway connection can start it on demand; previews do not start it', async () => {
+    const f = fixture('start-on-connect');
+    const selection = { agentId: 'claude-code', providerId: f.provider.id, model: 'model-one', mode: 'gateway' };
+    let running = false, starts = 0;
+    const deps = { ...f.deps, gatewayStatus: () => ({ running }), startGateway: async () => { starts++; running = true; } };
+    const preview = await api.runAction(deps, 'agent.preview', selection);
+    assert.equal(preview.ok, true); assert.equal(starts, 0);
+      const stale = await api.runAction(deps, 'agent.connect', { ...selection, revision: 'outdated' });
+      assert.equal(stale.ok, false); assert.equal(starts, 0);
+    const saved = await api.runAction(deps, 'agent.connect', { ...selection, revision: preview.revision });
+    assert.equal(saved.ok, true, saved.message); assert.equal(starts, 1);
+    assert.equal(JSON.parse(read(saved.path)).env.ANTHROPIC_MODEL, f.provider.id + '/model-one');
+  });
+  await check('When gateway startup fails, an actionable error leaves client files untouched', async () => {
+    const f = fixture('gateway-port-busy'), config = path.join(f.client, '.claude', 'settings.json');
+    write(config, '{"env":{"KEEP":"original"}}');
+    const before = read(config), deps = { ...f.deps, gatewayStatus: () => ({running: false}),
+      startGateway: async () => { throw new Error(secretFault); } };
+    const r = await api.runAction(deps, 'agent.connect', { agentId: 'claude-code', providerId: f.provider.id, model: 'model-one' });
+    assert.equal(r.ok, false); assert.match(r.message, /端口/); assert(!r.message.includes(secretFault));
+    assert.equal(read(config), before);
+  });
+  await check('Private model services with no API key agree across preview and routing', async () => {
+    const f = fixture('anonymous');
+    for (const [hostname, allowed] of [['127.0.2.3', true], ['10.0.0.2', true], ['172.31.1.1', true],
+      ['192.168.5.3', true], ['[::1]', true], ['172.32.0.1', false], ['10.relay.example', false]]) {
+      const p = f.store.saveProvider({id: f.provider.id, baseUrl: 'http://' + hostname, apiKeys: []});
+      const r = await f.call('agent.preview', { agentId: 'claude-code', authMode: 'api' });
+      assert.equal(r.ok, allowed, hostname);
+      assert.equal(new api.Router(f.store).resolveProviderModel(p.id, 'model-one').candidates.length > 0, allowed, hostname);
+    }
+    f.store.saveProvider({id: f.provider.id, baseUrl: 'http://127.0.0.1', apiKeys: [{id:'off',weight:1,label:'off',enabled:false,key:'disabled'}]});
+    assert.equal((await f.call('agent.preview', { agentId: 'claude-code', authMode: 'api' })).ok, false);
+    assert.equal(new api.Router(f.store).resolveProviderModel(f.provider.id, 'model-one').candidates.length, 0);
+  });
+  await check('A pasted versioned API operation keeps its relay prefix for native and gateway requests', () => {
+    const ir = api.parseClientRequest('openai-chat', {model: 'sample', messages:[{role:'user',content:'hi'}]});
+    for (const [format, suffix, sdkBase] of [['openai-chat','/v1/chat/completions','/v1'],
+      ['openai-responses','/v1/responses','/v1'], ['anthropic','/v1/messages',''],
+      ['gemini','/v1beta/models/sample:generateContent','']]) {
+      const relay = 'https://relay.example/prefix', baseUrl = relay + suffix + '/';
+      const req = api.buildUpstreamHttp(ir, {format,baseUrl,model:'sample',apiKey:'fixture'}, 'openai-chat');
+      assert.equal(req.url, relay + suffix);
+      assert.equal(api.nativeDirectParameters(baseUrl, format).baseUrl, relay + sdkBase);
+      const anonymous = api.buildUpstreamHttp(ir, { format, baseUrl: 'http://v1', model: 'sample', apiKey: '' }, 'openai-chat');
+      assert.equal(anonymous.url, 'http://v1' + suffix);
+      for (const name of ['authorization', 'x-api-key', 'x-goog-api-key']) assert.equal(anonymous.headers[name], undefined);
+    }
+  });
   const stateSnapshot = fixture => ({ cached: JSON.stringify(fixture.store.listAgents()), disk: snapshot([path.join(fixture.store.dir, 'agents.json')]) });
   const assertStates = (fixture, before) => { assert.equal(JSON.stringify(fixture.store.listAgents()), before.cached); assertSnapshot(before.disk); };
   const assertNoSecrets = result => { const value = JSON.stringify(result); for (const secret of [secretFault, 'fixture-provider-key', 'fixture-gateway-token', 'fixture-refresh-private', 'fixture-external-private']) assert(!value.includes(secret)); };

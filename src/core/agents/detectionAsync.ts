@@ -6,7 +6,7 @@ import { inspectDesktopAsync } from '../readOnlyJobs.js';
 import type { CodingDesktopDetection } from '../desktopDetection.js';
 
 type Detections = Record<string, AgentDetection>;
-interface DetectionContext { revision: number; exePath?: string; isolatedHome?: string; codexHome?: string; claudeHome?: string }
+interface DetectionContext { revision: number; exePath?: string; isolatedHome?: string; codexHome?: string; claudeHome?: string; geminiHome?: string }
 interface DetectionWorker {
   on(event: string, listener: (...args: any[]) => void): unknown;
   removeAllListeners(): unknown;
@@ -114,7 +114,7 @@ function lightweightDetection(): Detections {
   }));
 }
 const scheduler = new AsyncDetectionScheduler({
-  context: () => ({ ...getDetectionContext(), isolatedHome: process.env.AURORA_CLIENT_HOME, codexHome: process.env.CODEX_HOME, claudeHome: process.env.CLAUDE_CONFIG_DIR }),
+  context: () => ({ ...getDetectionContext(), isolatedHome: process.env.AURORA_CLIENT_HOME, codexHome: process.env.CODEX_HOME, claudeHome: process.env.CLAUDE_CONFIG_DIR, geminiHome: process.env.GEMINI_CLI_HOME }),
   fallback: lightweightDetection,
   worker: context => new Worker(path.join(__dirname, 'detection-worker.cjs'), { workerData: { exePath: context.exePath } }),
 });

@@ -2,6 +2,7 @@
  * 协议注册表：客户端说 A，上游说 B，这里完成 A→IR→B 与 B→IR→A 的往返。
  */
 import type { IRRequest, IRResponse, ProtocolName, StreamEvent } from '../types.js';
+import { providerEndpoint } from '../providerEndpoint.js';
 import {
   AnthropicStreamDecoder,
   AnthropicStreamEncoder,
@@ -60,21 +61,13 @@ export interface UpstreamHttp {
   body: string;
 }
 
-function joinBase(base: string): string {
-  let b = (base || '').trim().replace(/\/+$/, '');
-  return b;
-}
-
-function hasVersionSuffix(base: string): boolean {
-  return /\/v\d+[a-z0-9]*$/i.test(base);
-}
-
 export function buildUpstreamHttp(
   ir: IRRequest,
   target: UpstreamTarget,
   clientProto: ProtocolName,
 ): UpstreamHttp {
-  const base = joinBase(target.baseUrl);
+  const { baseUrl: base, version } = providerEndpoint(target.baseUrl, target.format);
+  const hasKey = !!target.apiKey.trim();
   const maxTokens = target.maxTokens && ir.maxTokens ? Math.min(target.maxTokens, ir.maxTokens) : ir.maxTokens ?? target.maxTokens;
   const headers: Record<string, string> = {
     'content-type': 'application/json',
@@ -87,9 +80,9 @@ export function buildUpstreamHttp(
 
   switch (target.format) {
     case 'anthropic': {
-      url = hasVersionSuffix(base) ? `${base}/messages` : `${base}/v1/messages`;
+      url = version ? `${base}/messages` : `${base}/v1/messages`;
       headers['anthropic-version'] = '2023-06-01';
-      headers['x-api-key'] = target.apiKey;
+      if (hasKey) headers['x-api-key'] = target.apiKey;
       if (/^sk-ant-|^sk-/.test(target.apiKey)) headers.authorization = `Bearer ${target.apiKey}`;
       body = encodeAnthropicRequest(ir, {
         model: target.model,
@@ -99,8 +92,8 @@ export function buildUpstreamHttp(
       break;
     }
     case 'openai-responses': {
-      url = hasVersionSuffix(base) ? `${base}/responses` : `${base}/v1/responses`;
-      headers.authorization = `Bearer ${target.apiKey}`;
+      url = version ? `${base}/responses` : `${base}/v1/responses`;
+      if (hasKey) headers.authorization = `Bearer ${target.apiKey}`;
       body = encodeResponsesRequest(ir, {
         model: target.model,
         maxTokens,
@@ -110,18 +103,18 @@ export function buildUpstreamHttp(
     }
     case 'gemini': {
       const action = ir.stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
-      const prefix = hasVersionSuffix(base) ? base : `${base}/v1beta`;
+      const prefix = version ? base : `${base}/v1beta`;
       url = `${prefix}/models/${encodeURIComponent(target.model)}:${action}`;
-      headers['x-goog-api-key'] = target.apiKey;
+      if (hasKey) headers['x-goog-api-key'] = target.apiKey;
       body = encodeGeminiRequest(ir, { model: target.model, maxTokens });
       break;
     }
     case 'openai-chat':
     default: {
-      url = hasVersionSuffix(base)
+      url = version
         ? `${base}/chat/completions`
         : `${base}/v1/chat/completions`;
-      headers.authorization = `Bearer ${target.apiKey}`;
+      if (hasKey) headers.authorization = `Bearer ${target.apiKey}`;
       body = encodeOpenAIChatRequest(ir, {
         model: target.model,
         maxTokens,

@@ -6,7 +6,9 @@ import { parse as parseToml } from 'smol-toml';
 import type { AuroraStore, Provider } from './store/index.js';
 import type { ProtocolName } from './types.js';
 import { atomicWrite, readText } from './agents/configFiles.js';
+import { parseGeminiSettings } from './agents/geminiSettings.js';
 import { CLAUDE_DESKTOP_PROFILE, resolveClaudeDesktopConfig } from './claudeDesktopPaths.js';
+import { claudeGlobalConfigPath, usesClaudeCloudProvider } from './agents/claudeCodeSettings.js';
 import { isValidContextWindow } from './modelContext.js';
 
 export type LocalSourceStatus = 'imported' | 'updated' | 'unchanged' | 'linked' | 'modified' | 'ignored' | 'missing-key' | 'unsupported' | 'missing-file';
@@ -141,9 +143,9 @@ function discover(ctx: Context): { candidates: Candidate[]; sources: LocalClient
       return readText(file);
     } catch { warnings.push(`${label}：配置不是可安全读取的普通文件，已跳过。`); return undefined; }
   };
-  const json = (file: string, label: string): Record<string, any> | undefined => {
+  const json = (file: string, label: string, parse: (text: string) => unknown = JSON.parse): Record<string, any> | undefined => {
     const raw = read(file, label); if (raw === undefined) return undefined;
-    try { const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')); if (!object(parsed)) throw new Error(); return parsed; }
+    try { const parsed = parse(raw.replace(/^\uFEFF/, '')); if (!object(parsed)) throw new Error(); return parsed; }
     catch { warnings.push(`${label}：JSON 配置无效，已跳过；没有改写源文件。`); return undefined; }
   };
   const add = (s: LocalClientSource, name: string, format: ProtocolName, base: unknown, key: unknown, models: unknown[], context?: Candidate['context']): void => {
@@ -226,7 +228,7 @@ function discover(ctx: Context): { candidates: Candidate[]; sources: LocalClient
     if (claude.apiKeyHelper || claude.api_key_helper) note(s, 'unsupported', 'API Key 由动态助手提供，未执行助手。');
     else {
       const env = object(claude.env) ? claude.env : {};
-      if (env.CLAUDE_CODE_USE_BEDROCK || env.CLAUDE_CODE_USE_VERTEX || env.CLAUDE_CODE_USE_FOUNDRY) note(s, 'unsupported', '当前使用云平台身份认证，请按对应平台手动配置。');
+      if (usesClaudeCloudProvider(env)) note(s, 'unsupported', '当前使用云平台身份认证，请按对应平台手动配置。');
       else if (env.ANTHROPIC_AUTH_TOKEN && env.ANTHROPIC_API_KEY && env.ANTHROPIC_AUTH_TOKEN !== env.ANTHROPIC_API_KEY) note(s, 'unsupported', '同时存在不同认证字段，需手动确认密钥优先级。');
       else if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_BASE_URL) add(s, 'Claude Code · 本机配置', 'anthropic', env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com', env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN,
         [env.ANTHROPIC_MODEL, env.ANTHROPIC_DEFAULT_OPUS_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL]);
@@ -237,7 +239,7 @@ function discover(ctx: Context): { candidates: Candidate[]; sources: LocalClient
   const claudeOAuth = object(claudeCredentials?.claudeAiOauth) ? claudeCredentials.claudeAiOauth : undefined;
   if (claudeOAuth) account('claude', 'Claude 官方账号', claudeCredentialsFile, 'anthropic', claudeOAuth.accessToken ?? claudeOAuth.access_token, claudeOAuth);
   else {
-    const accountFile = path.join(ctx.home, '.claude.json');
+    const accountFile = claudeGlobalConfigPath(ctx.home, ctx.environment.CLAUDE_CONFIG_DIR);
     const record = json(accountFile, 'Claude 本地账号记录');
     if (object(record?.oauthAccount)) account('claude', 'Claude 官方账号', accountFile, 'anthropic', undefined, record.oauthAccount);
   }
@@ -254,8 +256,15 @@ function discover(ctx: Context): { candidates: Candidate[]; sources: LocalClient
         if (!profile) continue;
         const s = source('claude-desktop', `Claude 桌面 · ${textValue(profile.name) || entry.replace(/\.json$/, '')}`, file);
         if (entry === `${CLAUDE_DESKTOP_PROFILE}.json`) { note(s, 'ignored', '云桥管理的桌面 profile 不重复导入。'); continue; }
-        if (profile.inferenceProvider !== 'gateway' || !['bearer', 'api-key', 'x-api-key'].includes(profile.inferenceGatewayAuthScheme)) {
+        const kind = profile.inferenceCredentialKind;
+        if (kind !== undefined && kind !== 'static' || kind === undefined && (profile.inferenceCredentialHelper || profile.inferenceGatewayOidc || profile.inferenceIdpOidc)) {
+          note(s, 'unsupported', '此 profile 使用动态认证，请在 Claude 桌面版中管理其凭据。'); continue;
+        }
+        if (profile.inferenceProvider !== 'gateway' || !['bearer', 'api-key', 'x-api-key'].includes(profile.inferenceGatewayAuthScheme ?? 'bearer')) {
           note(s, 'unsupported', '此 profile 的认证协议不明确，需手动配置。'); continue;
+        }
+        if (typeof profile.inferenceGatewayApiKey === 'string' && profile.inferenceGatewayApiKey.startsWith('__sealed__:')) {
+          note(s, 'missing-key', 'Claude 桌面版已加密保存 API Key，请在供应商设置中填写原密钥。'); continue;
         }
         const models = Array.isArray(profile.inferenceModels) ? profile.inferenceModels.map((m: unknown) => object(m) ? m.name : m) : [];
         add(s, s.label, 'anthropic', profile.inferenceGatewayBaseUrl, profile.inferenceGatewayApiKey, models);
@@ -280,9 +289,9 @@ function discover(ctx: Context): { candidates: Candidate[]; sources: LocalClient
       return values;
     } catch { warnings.push(`${label}：环境文件包含重复、复杂或不明确的值，已跳过。`); return undefined; }
   };
-  const geminiDir = path.join(ctx.home, '.gemini'), geminiEnvFile = path.join(geminiDir, '.env');
+  const geminiDir = path.join(ctx.environment.GEMINI_CLI_HOME || ctx.home, '.gemini'), geminiEnvFile = path.join(geminiDir, '.env');
   const geminiEnv = envFile(geminiEnvFile, 'Gemini CLI');
-  const geminiSettings = json(path.join(geminiDir, 'settings.json'), 'Gemini CLI 设置');
+  const geminiSettings = json(path.join(geminiDir, 'settings.json'), 'Gemini CLI 设置', parseGeminiSettings);
   if (geminiEnv) add(source('gemini-cli', 'Gemini CLI · 本机环境配置', geminiEnvFile), 'Gemini CLI · 本机配置', 'gemini', geminiEnv.GOOGLE_GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com', geminiEnv.GEMINI_API_KEY, [geminiEnv.GEMINI_MODEL ?? geminiSettings?.model?.name]);
   const geminiOauthFile = path.join(geminiDir, 'oauth_creds.json'), geminiOauth = json(geminiOauthFile, 'Gemini 官方登录记录');
   if (geminiOauth && (geminiOauth.access_token || geminiOauth.refresh_token)) account('gemini', 'Google 官方账号（Gemini CLI）', geminiOauthFile, 'gemini', geminiOauth.access_token ?? geminiOauth.refresh_token, geminiOauth);

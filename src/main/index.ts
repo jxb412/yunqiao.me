@@ -51,10 +51,11 @@ function refreshLocalClients(force = false) {
   try { refreshTray(); } catch { /* Existing window can still display the actionable scan warning. */ }
   if (win && !win.isDestroyed()) win.webContents.send('aurora:gateway', status());
 }
-function deps(): ActionDeps { return { store, dataDir: store.dir, gatewayStatus: status, gatewayUrl, restartGateway: ensureGateway, resetCooldowns: () => gateway?.router.resetCooldowns(), platform: process.platform, version: app.getVersion(), localClientWarnings }; }
-async function ensureGateway(): Promise<void> {
+function deps(): ActionDeps { return { store, dataDir: store.dir, gatewayStatus: status, gatewayUrl, startGateway: () => ensureGateway(true), restartGateway: ensureGateway, resetCooldowns: () => gateway?.router.resetCooldowns(), platform: process.platform, version: app.getVersion(), localClientWarnings }; }
+async function ensureGateway(onlyIfStopped = false): Promise<void> {
   const pending = gatewayChange || Promise.resolve();
   const change = pending.catch(() => {}).then(async () => {
+    if (onlyIfStopped && gateway?.getStatus().running) return;
     const settings = store.getSettings();
     if (gateway) await gateway.stop();
     resetGateway(); gatewayError = '';
@@ -171,7 +172,7 @@ async function handleAction(action: string, payload: any) {
       if (result.ok && reconnect) result.message += ' 如使用桌面增强，请在增强页面重新连接。';
       return result;
     }
-    case 'gateway.start': await ensureGateway(); return status();
+    case 'gateway.start': await ensureGateway(true); return status();
     case 'gateway.stop': await gateway?.stop(); refreshTray(); return status();
     case 'app.openExternal': await shell.openExternal(allowedExternal(String(payload.url))); return { ok: true };
     case 'app.openPath': { const error = await shell.openPath(String(payload.path)); return { ok: !error, message: error }; }

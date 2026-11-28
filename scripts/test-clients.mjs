@@ -122,6 +122,52 @@ try {
     assert(desktop.disconnect(direct.backup).ok);
   });
   const [geminiFile, envFile] = gemini.configPaths();
+  check('Gemini preserves JSON comments and unrelated bytes, redacts private settings, and restores both files', () => {
+    const original = '\uFEFF{\r\n  // private-comment\r\n  "model": { "name": "old", "other": "http://keep.example" },\r\n  "security": { "auth": { /* keep-auth */ "selectedType": "oauth-personal" } },\r\n  "mcpServers": { "fixture": { "args": ["private-argument"], "env": { "ARBITRARY": "private-value" } } }\r\n}\r\n';
+    const originalEnv = 'CUSTOM=preserve\r\n';
+    write(geminiFile, original); write(envFile, originalEnv);
+    const preview = gemini.preview(context);
+    assert(preview.ok, preview.message);
+    for (const secret of ['private-comment', 'private-argument', 'private-value']) assert(!JSON.stringify(preview).includes(secret));
+    assert.equal(JSON.parse(preview.files[0].before).model.name, 'old');
+    const applied = gemini.connect({ ...context, expectedRevision: preview.revision });
+    assert(applied.ok, applied.message);
+    assert.equal(read(geminiFile), original.replace('"old"', '"prov_test/model-one"').replace('"oauth-personal"', '"gemini-api-key"'));
+    assert(gemini.matchesConfiguration(context));
+    assert(gemini.disconnect(applied.backup).ok);
+    assert.equal(read(geminiFile), original); assert.equal(read(envFile), originalEnv);
+  });
+  check('Malformed Gemini JSONC and invalid managed sections leave settings and credentials untouched', () => {
+    const originalEnv = read(envFile);
+    for (const invalid of ['', '{"bad": true,}', '{"bad":true} /* unfinished', '[]', '{"model":3}', '{"model":{"name":"a","name":"b"}}']) {
+      write(geminiFile, invalid);
+      assert.equal(gemini.preview(context).ok, false);
+      assert.equal(gemini.connect(context).ok, false);
+      assert.equal(read(geminiFile), invalid); assert.equal(read(envFile), originalEnv);
+    }
+  });
+  check('Gemini uses the native .gemini folder beneath GEMINI_CLI_HOME for preview, apply and restore', () => {
+    const previousRoot = process.env.GEMINI_CLI_HOME;
+    const custom = path.join(isolated, 'custom-gemini-home');
+    try {
+      process.env.GEMINI_CLI_HOME = custom;
+      assert.deepEqual(gemini.configPaths(), [geminiFile, envFile]);
+      delete process.env.AURORA_CLIENT_HOME;
+      const expected = ['settings.json', '.env'].map(name => path.join(custom, '.gemini', name));
+      assert.deepEqual(gemini.configPaths(), expected);
+      const preview = gemini.preview(context);
+      assert.deepEqual(preview.files.map(file => file.path), expected);
+      assert(preview.warnings.some(line => line.includes('工作区信任')));
+      const result = gemini.connect({ ...context, expectedRevision: preview.revision });
+      assert(result.ok, result.message);
+      assert.match(read(expected[1]), /GEMINI_API_KEY=/);
+      assert(gemini.disconnect(result.backup).ok);
+      assert(expected.every(file => !fs.existsSync(file)));
+    } finally {
+      process.env.AURORA_CLIENT_HOME = isolated;
+      if (previousRoot === undefined) delete process.env.GEMINI_CLI_HOME; else process.env.GEMINI_CLI_HOME = previousRoot;
+    }
+  });
   write(geminiFile, JSON.stringify({ security: { other: true }, model: { maxSessionTurns: 20 } })); write(envFile, 'CUSTOM=preserve\nGEMINI_API_KEY=old-secret\n');
   const g = gemini.connect(context);
   check('Gemini uses supported .env and auth settings while preserving others', () => { assert(g.ok, g.message); assert(read(envFile).includes('CUSTOM=preserve')); assert.match(read(envFile), /GOOGLE_GENAI_API_VERSION="v1beta"/); assert.equal(JSON.parse(read(geminiFile)).security.auth.selectedType, 'gemini-api-key'); assert.equal(JSON.parse(read(geminiFile)).model.maxSessionTurns, 20); assert(gemini.disconnect(g.backup).ok); });
@@ -143,6 +189,22 @@ try {
   const historyHome = path.join(isolated, '.codex');
   const deps = { store, dataDir: store.dir, gatewayStatus: () => ({ running: true }), gatewayUrl: () => context.gatewayUrl,
     historyContext: { home: historyHome, sqliteHome: historyHome, blockingProcesses: async () => [] } };
+  for (const [client, host, keys] of [[gemini, '127.0.0.1', []], [claude, '192.168.1.25', [{ id: 'anonymous', enabled: true, key: ' ', label: '', weight: 1 }]]]) {
+    const anonymous = store.saveProvider({ ...provider, id: undefined, format: client.protocol, baseUrl: `http://${host}:8080`, apiKeys: keys });
+    const selection = { agentId: client.id, providerId: anonymous.id, model: 'model-one' };
+    const snapshots = () => client.configPaths().map(file => fs.existsSync(file) ? read(file) : null);
+    const before = snapshots();
+    for (const action of ['agent.preview', 'agent.parameters', 'agent.connect']) {
+      const result = await api.runAction(deps, action, { ...selection, mode: 'direct' });
+      assert.equal(result.ok, false, action); assert.match(result.message, /API Key.*本地网关/);
+      assert.equal(result.script, undefined); assert.equal(result.backup, undefined);
+    }
+    const viaGateway = await api.runAction(deps, 'agent.parameters', { ...selection, mode: 'gateway' });
+    check(`${client.name} directs anonymous local services through the gateway and preserves existing files`, () => {
+      assert(viaGateway.ok, viaGateway.message); assert.equal(viaGateway.apiKey, store.getSettings().gatewayToken);
+      assert.deepEqual(snapshots(), before);
+    });
+  }
   const savedDesktopProvider = store.saveProvider({ ...provider, id: undefined, name: 'Desktop fixture', models: [...provider.models, ...desktopCatalog.map(id => ({ id }))] });
   store.saveAgent({ id: 'claude-desktop', connected: true, providerId: savedDesktopProvider.id, model: 'model-one', modelMap: { haiku: 'model-two' } });
   const nextDesktop = { agentId: 'claude-desktop', providerId: savedDesktopProvider.id, model: 'claude-fable-5' };

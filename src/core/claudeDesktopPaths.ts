@@ -8,6 +8,7 @@ export interface ClaudeDesktopPathOptions {
   home?: string;
   environment?: Record<string, string | undefined>;
   isolated?: boolean;
+  windowsBuild?: number;
 }
 export interface ClaudeDesktopConfigCandidate {
   root: string;
@@ -54,36 +55,31 @@ export function resolveClaudeDesktopConfig(options: ClaudeDesktopPathOptions = {
   const base = path.resolve(configuredBase);
   const anchor = isolated ? userHome : base;
   const candidates: ClaudeDesktopConfigCandidate[] = [];
-  const add = (root: string, source: ClaudeDesktopConfigCandidate['source'], packageExists = false) => {
-    const candidate: ClaudeDesktopConfigCandidate = { root, source, existing: packageExists, safe: false }; candidates.push(candidate);
+  const add = (root: string, source: ClaudeDesktopConfigCandidate['source']) => {
+    const candidate: ClaudeDesktopConfigCandidate = { root, source, existing: false, safe: false }; candidates.push(candidate);
     safeDirectories(anchor, root);
     for (const dir of [path.join(root, 'Claude'), path.join(root, 'Claude-3p'), path.join(root, 'Claude-3p', 'configLibrary'), path.join(root, 'Claude', '.aurora-backups')]) safeDirectories(anchor, dir);
-    candidate.existing ||= directory(path.join(root, 'Claude')) || directory(path.join(root, 'Claude-3p'));
+    candidate.existing = directory(path.join(root, 'Claude')) || directory(path.join(root, 'Claude-3p'));
     candidate.safe = true;
   };
   try {
     add(base, 'standard');
     if (platform === 'win32') {
       const packages = path.join(base, 'Packages'); safeDirectories(anchor, packages);
-      if (directory(packages)) {
-        let count = 0, matches = 0;
-        const entries = fs.opendirSync(packages);
-        try {
-          for (let entry = entries.readSync(); entry; entry = entries.readSync()) {
-            if (++count > 2048) throw new Error('Windows 应用目录过大，无法完整核对 Claude 安装位置');
-            if (!/^Claude_[a-z0-9]{13}$/i.test(entry.name)) continue;
-            if (++matches > 16) throw new Error('发现过多 Claude 安装目录，无法确认配置位置');
-            add(path.join(packages, entry.name, 'LocalCache', 'Local'), 'msix', true);
-          }
-        } finally { entries.closeSync(); }
-      }
+      const officialPackage = path.join(packages, 'Claude_pzs8sxrjxfjjc');
+      if (directory(officialPackage)) add(path.join(officialPackage, 'LocalCache', 'Local'), 'msix');
     }
   } catch (error) {
     return { status: 'blocked', candidates, reason: 'Claude 桌面配置目录无法安全核对，已停止自动读写：' + String((error as Error).message) };
   }
   const existing = candidates.filter(candidate => candidate.existing);
   if (existing.length > 1) return { status: 'ambiguous', candidates, reason: '发现多个 Claude 桌面配置位置（普通版或商店版），无法确认客户端实际使用哪一份。请在 Claude 的第三方模型设置中核对配置目录；云桥未自动写入任何位置。' };
-  const selected = existing[0] ?? candidates[0];
+  const build = options.windowsBuild ?? Number(os.release().split('.')[2]);
+  // On pre-Windows 11 installations with no data yet, keep the MSIX fallback.
+  // Once the client has created its data, that location wins across OS upgrades.
+  const freshPackage = platform === 'win32' && build > 0 && build < 22000
+    ? candidates.find(candidate => candidate.source === 'msix') : undefined;
+  const selected = existing[0] ?? freshPackage ?? candidates[0];
   return { status: 'resolved', source: selected.source, root: selected.root, candidates,
     reason: selected.source === 'msix' ? '已识别 Claude 商店版的独立配置目录' : '使用 Claude 桌面标准配置目录' };
 }
