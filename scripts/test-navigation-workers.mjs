@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { Worker } from 'node:worker_threads';
 import { execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -88,20 +88,37 @@ try {
     workers[3].release(0); await new Promise(setImmediate); assert.equal(workers.length, 4);
   });
   await check('Timed-out synchronous child probes cannot exceed the real live-worker limit', async () => {
-    const slow = path.join(root, 'sync-probe-worker.cjs'), marker = path.join(root, 'sync-probe-started');
-    write(slow, `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(marker)},'started');require('node:child_process').execFileSync(process.execPath,['-e','Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,700)'],{windowsHide:true,stdio:'ignore',timeout:2000});`);
-    let live = 0, maximum = 0; const stopped = [];
-    const scheduler = new api.ReadOnlyJobScheduler({ context: () => 'fixture', concurrency: 1, timeoutMs: 250, worker: () => {
-      const worker = new Worker(slow); live++; maximum = Math.max(maximum, live);
-      const terminate = worker.terminate.bind(worker);
-      stopped.push(new Promise(resolve => { worker.terminate = () => terminate().then(code => { live--; resolve(); return code; }); })); return worker;
-    } });
-    const first = assert.rejects(scheduler.run('sessions.scan'), /超时/);
-    for (let i = 0; !fs.existsSync(marker) && i < 40; i++) await new Promise(resolve => setTimeout(resolve, 5));
-    assert(fs.existsSync(marker), 'Synchronous child probe actually started');
-    await Promise.all([first, assert.rejects(scheduler.run('codex.assets'), /超时/), assert.rejects(scheduler.run('sessions.read', { path: 'fixture' }), /超时/)]);
-    assert.equal(maximum, 1); assert.equal(live, 1);
-    await Promise.all(stopped); assert.equal(live, 0); assert.equal(maximum, 1);
+    const slow = path.join(root, 'sync-probe-worker.cjs'), child = path.join(root, 'sync-probe-child.cjs');
+    const ready = path.join(root, 'sync-probe-started'), release = path.join(root, 'sync-probe-release');
+    write(child, `
+      const fs = require('node:fs'), wait = new Int32Array(new SharedArrayBuffer(4));
+      fs.writeFileSync(process.argv[2], 'started');
+      while (!fs.existsSync(process.argv[3])) Atomics.wait(wait, 0, 0, 20);
+    `);
+    write(slow, `
+      const { execFileSync } = require('node:child_process');
+      execFileSync(process.execPath, ${JSON.stringify([child, ready, release])}, { windowsHide: true, stdio: 'ignore', timeout: 15000 });
+    `);
+    // Start the real synchronous probe before timing the scheduler, so Windows
+    // process startup under load cannot consume the fixture's short job deadline.
+    const firstWorker = new Worker(slow), workers = [];
+    try {
+      const deadline = Date.now() + 10000;
+      while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      assert(fs.existsSync(ready), 'Synchronous child probe actually started');
+      const scheduler = new api.ReadOnlyJobScheduler({ context: () => 'fixture', concurrency: 1, timeoutMs: 250, worker: () => {
+        const worker = workers.length ? new Worker(slow) : firstWorker;
+        workers.push(worker); return worker;
+      } });
+      await Promise.all([assert.rejects(scheduler.run('sessions.scan'), /超时/), assert.rejects(scheduler.run('codex.assets'), /超时/), assert.rejects(scheduler.run('sessions.read', { path: 'fixture' }), /超时/)]);
+      assert.equal(workers.length, 1, 'Queued callers must time out without spawning more workers');
+      assert.notEqual(firstWorker.threadId, -1, 'The synchronous probe still owns its worker slot');
+    } finally {
+      const stopped = [firstWorker, ...workers.slice(1)].filter(worker => worker.threadId !== -1).map(worker => once(worker, 'exit'));
+      write(release, 'stop');
+      await Promise.all(stopped);
+    }
+    assert.equal(firstWorker.threadId, -1); assert.equal(workers.length, 1);
   });
   await check('A genuinely blocked worker leaves main-thread timers and unrelated page actions responsive', async () => {
     const slow = path.join(root, 'slow-worker.cjs'); write(slow, "const {parentPort}=require('node:worker_threads');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,300);parentPort.postMessage({ok:true,value:[]});");

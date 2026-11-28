@@ -227,12 +227,10 @@ export function createMacClientLifecycle(host: MacLifecycleHost = nativeMacLifec
     if (target.agentId === 'codex-cli') configuration.CODEX_HOME = isolated ? path.join(isolated, '.codex') : environment.CODEX_HOME || path.join(host.home(), '.codex');
     if (target.agentId === 'gemini-cli') configuration.GEMINI_CLI_HOME = isolated || environment.GEMINI_CLI_HOME || host.home();
     if (target.agentId === 'claude-code') {
-      const nativeHome = isolated || host.home(), selected = !isolated && environment.CLAUDE_CONFIG_DIR;
-      // Setting CLAUDE_CONFIG_DIR changes the native global-file layout. The
-      // adapter treats the default directory as ~/.claude.json, so unset a
-      // stale Terminal override there and bind HOME only for the child process.
-      configuration.HOME = nativeHome;
-      configuration.CLAUDE_CONFIG_DIR = selected && path.resolve(selected) !== path.resolve(path.join(nativeHome, '.claude')) ? selected : undefined;
+      // An explicit ~/.claude puts .claude.json inside that folder too.
+      // An unset override locates it directly under HOME.
+      configuration.HOME = isolated || host.home();
+      configuration.CLAUDE_CONFIG_DIR = isolated ? undefined : environment.CLAUDE_CONFIG_DIR || undefined;
     }
     const result = await jxa('terminal', undefined, undefined, terminal, macTerminalCommand(target.executable, workingDirectory, configuration));
     if (result?.submitted !== true) throw new MacLifecycleError('Terminal 未确认新的启动命令，请检查新终端窗口');
