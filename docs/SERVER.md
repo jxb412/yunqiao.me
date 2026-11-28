@@ -92,6 +92,12 @@ PHP 脚本先暂存到网站目录之外并逐个运行 `php -l`，检查通过�
 
 元数据发布脚本校验本地清单、官网 HTTPS 文件长度与服务器 SHA256，核对全部三个安装包后，才在配置锁内备份原配置并仅替换更新字段。保留管理员、目录和统计配置，拒绝版本降级；配置不存在时拒绝自动初始化。新元数据只保留当前实际发布的平台链接，不把旧包标记为新版本。配置备份位于私有数据目录 `release-backups/`，禁止放进公开网站目录。发布后仍需分别验证旧版与同版本客户端的查询结果及下载链接。
 
+## 软件下载页同步
+
+官网发布客户端后，软件下载站的 `yunqiao-download-page.timer` 每 5 分钟检查公开更新接口和发布清单。两者版本一致、安装包通过校验后，同步程序更新页面使用的 `resources/yunqiao-release.json`。页面中的 Windows 便携版、两种 Mac 的 DMG、文件大小、发布日期和版本说明链接会一起切换。源站暂时不可用或发布尚未完成时，页面继续使用上一次成功的结果。
+
+可在下载站运行 `systemctl start yunqiao-download-page.service` 立即检查，或用 `journalctl -u yunqiao-download-page.service -n 20` 查看最近结果。服务使用网站账户执行，只需访问公开发布接口并写入本机的页面数据。页面和 CDN 的缓存可能使访客稍后才看到新版。[软件下载页](https://www.yunqiao.me/downloads) · [同步程序](../scripts/sync_download_page.py)
+
 ## 目录示例
 
 ```json

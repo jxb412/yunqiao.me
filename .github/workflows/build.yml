@@ -39,6 +39,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python scripts/test-member-admin-policy.py
+      - run: python scripts/test-download-page-sync.py
       - run: php scripts/test-catalog-sync.php
       - run: php scripts/test-server-storage.php
       - run: php scripts/test-config-concurrency.php
