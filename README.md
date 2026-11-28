@@ -4,11 +4,11 @@
 
 从你正在使用的客户端开始：选择 Claude Code、兼容的 ChatGPT 桌面版或 Codex CLI，连接自己的 API 供应商，选好模型，预览后应用。支持国内外模型服务与自定义中转地址。新安装默认使用 **深夜** 主题，可在设置中切换为云白或跟随系统；升级保留已保存的主题选择。
 
-[下载 0.6.15](https://github.com/jxb412/yunqiao.me/releases/tag/v0.6.15) · [安装说明](INSTALLATION.md) · [使用指南](USER-GUIDE.md) · [反馈问题](https://github.com/jxb412/yunqiao.me/issues) · [用户讨论](https://github.com/jxb412/yunqiao.me/discussions)
+[下载 0.6.16](https://github.com/jxb412/yunqiao.me/releases/tag/v0.6.16) · [安装说明](INSTALLATION.md) · [使用指南](USER-GUIDE.md) · [反馈问题](https://github.com/jxb412/yunqiao.me/issues) · [用户讨论](https://github.com/jxb412/yunqiao.me/discussions)
 
-> 文档更新于 **2026 年 11 月 28 日**。本文对应 **0.6.15**，Windows 与 macOS 安装包请从 [Releases 下载页](https://github.com/jxb412/yunqiao.me/releases/tag/v0.6.15)直接下载。旧版可能不包含下文全部功能。
+> 文档更新于 **2026 年 11 月 28 日**。本文对应 **0.6.16**，Windows 与 macOS 安装包请从 [Releases 下载页](https://github.com/jxb412/yunqiao.me/releases/tag/v0.6.16)直接下载。旧版可能不包含下文全部功能。
 
-本版修复 Windows 桌面客户端重启、Claude Desktop 模型选择和工具调用历史配对问题。模型同步支持读取 Gemini 和 Anthropic 的后续分页，客户端接入新增 ZCode 桌面版手动配置指南。详见 [0.6.15 版本说明](docs/RELEASE-0.6.15.md)。
+本版将 Codex 的默认上下文窗口设为 272000 个 token，默认自动压缩阈值设为 244800 个 token。详见 [0.6.16 版本说明](docs/RELEASE-0.6.16.md)。
 
 ChatGPT / Codex 先保存客户端配置，再单独尝试历史备份与修复。历史暂时无法处理时保留原样并显示原因，已保存的配置仍可使用；保存工作后重启客户端加载新设置。配置文件本身无法安全保存时仍会明确报错。网关或共存模式的旧会话入口连接已选择的供应商和模型，使用期间请保持云桥运行；直连模式保留旧会话模型名，需上游仍支持该模型。兼容入口不能恢复缺失正文，也不能保证跨账号加密内容可以继续使用。操作与恢复说明见[历史迁移指南](docs/HISTORY-PROVIDER-MIGRATION.md)。
 
@@ -61,14 +61,14 @@ ChatGPT / Codex 的配置结果与历史状态分开显示。配置先保存，�
 
 ## 下载与安装
 
-| 平台 | 0.6.15 下载 |
+| 平台 | 0.6.16 下载 |
 | --- | --- |
-| Windows x64 | [安装版](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.15/YunQiaoAI-0.6.15-win-x64-setup.exe) · [免安装版](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.15/YunQiaoAI-0.6.15-win-x64-portable.exe) · [完整解压版](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.15/YunQiaoAI-0.6.15-win-x64.zip) |
-| macOS Apple Silicon | [DMG](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.15/YunQiaoAI-0.6.15-mac-arm64.dmg) · [ZIP](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.15/YunQiaoAI-0.6.15-mac-arm64.zip)，适用于 Apple M 系列芯片 |
-| macOS Intel | [DMG](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.15/YunQiaoAI-0.6.15-mac-x64.dmg) · [ZIP](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.15/YunQiaoAI-0.6.15-mac-x64.zip)，适用于 Intel 处理器 |
+| Windows x64 | [安装版](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.16/YunQiaoAI-0.6.16-win-x64-setup.exe) · [免安装版](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.16/YunQiaoAI-0.6.16-win-x64-portable.exe) · [完整解压版](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.16/YunQiaoAI-0.6.16-win-x64.zip) |
+| macOS Apple Silicon | [DMG](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.16/YunQiaoAI-0.6.16-mac-arm64.dmg) · [ZIP](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.16/YunQiaoAI-0.6.16-mac-arm64.zip)，适用于 Apple M 系列芯片 |
+| macOS Intel | [DMG](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.16/YunQiaoAI-0.6.16-mac-x64.dmg) · [ZIP](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.16/YunQiaoAI-0.6.16-mac-x64.zip)，适用于 Intel 处理器 |
 | iPhone / iPad | 目前没有可直接安装的正式 App，可通过浏览器连接电脑端 |
 
-普通用户请下载上表安装包；[Releases 的 Assets](https://github.com/jxb412/yunqiao.me/releases/tag/v0.6.15)同时提供 [SHA256 校验清单](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.15/SHA256SUMS.txt)。具体文件名和步骤见[安装说明](INSTALLATION.md)。[GitHub Actions](https://github.com/jxb412/yunqiao.me/actions/workflows/build.yml) 中的产物用于体验开发构建，可能包含尚未正式发布的改动。
+普通用户请下载上表安装包；[Releases 的 Assets](https://github.com/jxb412/yunqiao.me/releases/tag/v0.6.16)同时提供 [SHA256 校验清单](https://github.com/jxb412/yunqiao.me/releases/download/v0.6.16/SHA256SUMS.txt)。具体文件名和步骤见[安装说明](INSTALLATION.md)。[GitHub Actions](https://github.com/jxb412/yunqiao.me/actions/workflows/build.yml) 中的产物用于体验开发构建，可能包含尚未正式发布的改动。
 
 Windows ZIP 版需完整解压后双击同目录的 `YunQiaoAI.exe`；portable 启动会显示准备提示。macOS 将 `YunQiaoAI.app` 拖入“应用程序”，未签名包的首次打开方法见[安装说明](INSTALLATION.md#安装和首次打开)。更新或切换包形式会保留已有本机数据。
 
@@ -79,7 +79,7 @@ Windows ZIP 版需完整解压后双击同目录的 `YunQiaoAI.exe`；portable �
 安装 [Node.js 22.x](https://nodejs.org/)（22.13 或更新版本，含 npm）和 [Git](https://git-scm.com/downloads) 后，可通过源码运行桌面应用：
 
 ```bash
-git clone --branch v0.6.15 --depth 1 https://github.com/jxb412/yunqiao.me.git yunqiao.me
+git clone --branch v0.6.16 --depth 1 https://github.com/jxb412/yunqiao.me.git yunqiao.me
 cd yunqiao.me
 npm install --include=dev
 npm start
@@ -87,7 +87,7 @@ npm start
 
 Windows PowerShell 请将最后两条命令写为 `npm.cmd install --include=dev` 和 `npm.cmd start`。首次安装需联网下载依赖；以后在保留的源码目录中运行启动命令，不会生成系统快捷方式。Windows、macOS 的完整命令与更新方法见 [npm 源码安装说明](INSTALLATION.md#npm-从源码安装运行)。
 
-版本说明：[0.6.15](docs/RELEASE-0.6.15.md) · [0.6.14](docs/RELEASE-0.6.14.md) · [0.6.13](docs/RELEASE-0.6.13.md) · [0.6.12](docs/RELEASE-0.6.12.md) · [0.6.11](docs/RELEASE-0.6.11.md) · [0.6.10](docs/RELEASE-0.6.10.md) · [0.6.9](docs/RELEASE-0.6.9.md) · [0.6.8](docs/RELEASE-0.6.8.md) · [0.6.7](docs/RELEASE-0.6.7.md) · [0.6.6](docs/RELEASE-0.6.6.md) · [0.6.5](docs/RELEASE-0.6.5.md) · [0.6.4](docs/RELEASE-0.6.4.md) · [0.6.3](docs/RELEASE-0.6.3.md) · [0.6.2](docs/RELEASE-0.6.2.md) · [0.6.1](docs/RELEASE-0.6.1.md)。
+版本说明：[0.6.16](docs/RELEASE-0.6.16.md) · [0.6.15](docs/RELEASE-0.6.15.md) · [0.6.14](docs/RELEASE-0.6.14.md) · [0.6.13](docs/RELEASE-0.6.13.md) · [0.6.12](docs/RELEASE-0.6.12.md) · [0.6.11](docs/RELEASE-0.6.11.md) · [0.6.10](docs/RELEASE-0.6.10.md) · [0.6.9](docs/RELEASE-0.6.9.md) · [0.6.8](docs/RELEASE-0.6.8.md) · [0.6.7](docs/RELEASE-0.6.7.md) · [0.6.6](docs/RELEASE-0.6.6.md) · [0.6.5](docs/RELEASE-0.6.5.md) · [0.6.4](docs/RELEASE-0.6.4.md) · [0.6.3](docs/RELEASE-0.6.3.md) · [0.6.2](docs/RELEASE-0.6.2.md) · [0.6.1](docs/RELEASE-0.6.1.md)。
 
 ## 数据与反馈
 

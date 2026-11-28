@@ -43,7 +43,7 @@ window.renderPage=(page='plugins')=>{if(fixtureGeneration!==window.generation&&w
                 {id:'full:removed',name:'已下架插件',description:'保留本机版本',source:'full',installed:true,enabled:true,status:'installed',version:'1',catalogMissing:true} ]};
               window.appState={plugins:[],builtinMiddleware:[{id:'system-prompt',name:'统一提示词',description:'追加提示词',defaultOptions:{text:'中文回答'}}]};
               window.assets=[{id:'skill:fixture',kind:'skill',name:'Fixture Skill',enabled:true,mutable:true,path:'/fixture/skills/demo'},{id:'plugin:fixture',kind:'plugin',name:'Native Plugin',enabled:true,mutable:false,path:'/fixture/plugins/demo'}];
-              window.codexFlags={flags:{model_context_window:'272000',model_auto_compact_token_limit:'100000'},schema:[{key:'model_context_window',label:'上下文窗口',type:'number',hint:'保存后同步为窗口的90%'},{key:'model_auto_compact_token_limit',label:'自动压缩阈值',type:'number',hint:'可单独修改'}]};
+              window.codexFlags={flags:{},schema:[{key:'model_context_window',label:'上下文窗口',type:'number',hint:'保存后同步为窗口的90%'},{key:'model_auto_compact_token_limit',label:'自动压缩阈值',type:'number',hint:'可单独修改'}]};
               window.aurora={invoke:async(action,payload={})=>{
                 window.calls.push({action,payload:structuredClone(payload)});
                 if(window.fail[action])throw new Error(window.fail[action]);
@@ -368,6 +368,28 @@ window.renderPage=(page='plugins')=>{if(fixtureGeneration!==window.generation&&w
             window_input = window_field.get_by_role('textbox')
             threshold_input = threshold_field.get_by_role('textbox')
             window_save = window_field.get_by_role('button', name='保存', exact=True)
+            threshold_save = threshold_field.get_by_role('button', name='保存', exact=True)
+            apply_defaults = page.get_by_role('button', name='应用默认上下文', exact=True)
+            writes = lambda: page.evaluate("window.calls.filter(c=>c.action==='codex.setFlag').map(c=>c.payload)")
+            expect(window_input).to_have_value('272000')
+            expect(threshold_input).to_have_value('244800')
+            expect(apply_defaults).to_be_enabled()
+            expect(window_field.get_by_text('此项尚未写入 config.toml，保存后生效。', exact=True)).to_be_visible()
+            expect(threshold_field.get_by_text('此项尚未写入 config.toml，保存后生效。', exact=True)).to_be_visible()
+            assert writes() == []
+            apply_defaults.click()
+            expect(apply_defaults).to_be_disabled()
+            assert writes() == [{'key': 'model_context_window', 'value': '272000'}]
+            assert page.evaluate("window.codexFlags.flags") == {'model_context_window': '272000', 'model_auto_compact_token_limit': '244800'}
+            checks.append('Unconfigured advanced settings show 272000/244800 without writing; applying defaults saves both through one context write')
+
+            threshold_input.fill('100000')
+            threshold_save.click()
+            expect(threshold_save).to_be_disabled()
+            page.get_by_role('button', name='重新检测', exact=True).click()
+            expect(threshold_input).to_have_value('100000')
+            expect(window_input).to_have_value('272000')
+            assert writes()[-1] == {'key': 'model_auto_compact_token_limit', 'value': '100000'}
             expect(window_save).to_be_enabled()
             expect(page.locator('#codex-context-compact-hint')).to_have_text('自动压缩：244800 tokens（90%）')
             threshold_input.fill('150000')
@@ -384,15 +406,34 @@ window.renderPage=(page='plugins')=>{if(fixtureGeneration!==window.generation&&w
             window_save.click()
             expect(threshold_input).to_have_value('244800')
             expect(window_save).to_be_disabled()
-            page.evaluate("window.codexFlags.flags={model_context_window:'',model_auto_compact_token_limit:'100000'}")
+            checks.append('Refreshing preserves a manual threshold; typing and failed saves keep both drafts, and resaving the window recalculates the threshold')
+
+            page.evaluate("window.codexFlags.flags={model_context_window:'128000'}")
             page.get_by_role('button', name='重新检测', exact=True).click()
-            expect(window_input).to_have_value('')
+            expect(window_input).to_have_value('128000')
+            expect(threshold_input).to_have_value('115200')
+            assert page.evaluate("window.codexFlags.flags") == {'model_context_window': '128000'}
+            apply_defaults.click()
+            expect(window_input).to_have_value('272000')
+            expect(threshold_input).to_have_value('244800')
+            expect(apply_defaults).to_be_disabled()
+            assert writes()[-1] == {'key': 'model_context_window', 'value': '272000'}
+            checks.append('A saved 128000-token window shows its 115200-token suggestion and stays intact until the user applies the default pair')
+
+            page.evaluate("window.codexFlags.flags={model_auto_compact_token_limit:'100000'}")
+            page.get_by_role('button', name='重新检测', exact=True).click()
+            expect(threshold_input).to_have_value('100000')
+            expect(window_input).to_have_value('272000')
+            window_input.fill('')
             expect(window_save).to_be_enabled()
             expect(page.locator('#codex-context-compact-hint')).to_have_count(0)
             window_save.click()
-            expect(threshold_input).to_have_value('')
-            expect(window_save).to_be_disabled()
-            checks.append('Saving an unchanged context repairs a stale 90 percent threshold; typing or failed saves preserve manual drafts, and an empty window can clear a leftover threshold')
+            expect(window_input).to_have_value('272000')
+            expect(threshold_input).to_have_value('244800')
+            expect(apply_defaults).to_be_enabled()
+            assert writes()[-1] == {'key': 'model_context_window', 'value': ''}
+            assert not any(page.evaluate("Object.values(window.codexFlags.flags)"))
+            checks.append('Clearing the window removes both saved overrides and redisplays the uncommitted default suggestions')
 
             page.evaluate("window.aurora=undefined;window.generation++;window.renderPage('plugins')")
             expect(page.get_by_text('请在电脑上管理桌面插件', exact=True)).to_be_visible()

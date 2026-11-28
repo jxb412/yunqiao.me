@@ -1,13 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import HistoryRepair from '../components/HistoryRepair';
 import ContextCompactHint from '../components/ContextCompactHint';
-import { defaultAutoCompactTokenLimit } from '../../../src/core/modelContext';
+import { DEFAULT_CHATGPT_CONTEXT_WINDOW, defaultAutoCompactTokenLimit } from '../../../src/core/modelContext';
 import type { PageProps } from '../App';
 import { Btn, Empty, Field, Ico, Modal, Toggle, useToast } from '../components/ui';
 import { call, isWebMode } from '../lib/api';
 
 interface Asset { id: string; kind: 'plugin' | 'skill' | 'prompt' | 'mcp'; name: string; path?: string; description?: string; enabled: boolean; mutable?: boolean; }
 interface Flag { key: string; label: string; type: string; hint: string; options?: string[]; }
+const defaultContext = String(DEFAULT_CHATGPT_CONTEXT_WINDOW);
+const defaultCompactLimit = String(defaultAutoCompactTokenLimit(DEFAULT_CHATGPT_CONTEXT_WINDOW));
+
+function editableFlags(saved: Record<string, string | undefined>): Record<string, string> {
+  const drafts = Object.fromEntries(Object.entries(saved).map(([key, value]) => [key, String(value ?? '')]));
+  if (!drafts.model_context_window) drafts.model_context_window = defaultContext;
+  if (!drafts.model_auto_compact_token_limit) {
+    const limit = defaultAutoCompactTokenLimit(Number(drafts.model_context_window));
+    drafts.model_auto_compact_token_limit = String(limit ?? '');
+  }
+  return drafts;
+}
+
 const kinds = { skill: { label: 'Skills 技能', icon: 'bolt', hint: '发现本机已安装的 Codex 技能。', docs: 'https://github.com/openai/skills' }, mcp: { label: 'MCP 服务器', icon: 'plug', hint: '查看 Codex 已配置的工具服务。', docs: 'https://developers.openai.com/codex/mcp/' }, prompt: { label: '全局提示词', icon: 'chat', hint: '维护 AGENTS.md 中的工作约定。', docs: 'https://developers.openai.com/codex/guides/agents-md/' }, plugin: { label: '客户端插件', icon: 'puzzle', hint: '查看本机 ChatGPT / Codex 插件目录。', docs: 'https://developers.openai.com/codex/' } };
 
 export default function CodexEnhance({ go }: PageProps) {
@@ -42,7 +55,11 @@ export default function CodexEnhance({ go }: PageProps) {
         if (!alive.current || lifecycle.current !== epoch) return;
         if (result?.ok === false) throw new Error(result.message || '读取失败，请重试');
         if (target === 'assets') setAssets(result.assets || []);
-        else { setFlags({ flags: result.flags || {}, schema: result.schema || [] }); setFlagDrafts(Object.fromEntries(Object.entries(result.flags || {}).map(([key, value]) => [key, String(value ?? '')]))); }
+        else {
+          const saved = result.flags || {};
+          setFlags({ flags: saved, schema: result.schema || [] });
+          setFlagDrafts(editableFlags(saved));
+        }
         loaded.current.add(target);
         setErrors(previous => { const next = { ...previous }; delete next[action]; return next; });
       } catch (error: any) {
@@ -83,6 +100,8 @@ export default function CodexEnhance({ go }: PageProps) {
     const savedLimit = flags?.flags.model_auto_compact_token_limit;
     return draft.trim() ? defaultAutoCompactTokenLimit(Number(draft)) === Number(savedLimit) : !savedLimit?.trim();
   }
+  const defaultContextSaved = flags?.flags.model_context_window === defaultContext
+    && flags.flags.model_auto_compact_token_limit === defaultCompactLimit;
   return <>
     <div className="page-head"><div><div className="eyebrow">DESKTOP WORKSPACE</div><h1>桌面工作台</h1><p>管理本机扩展与工作约定，查看会话状态和客户端配置。</p></div><div className="actions"><Btn onClick={() => go('sessions')}><Ico name="chat" size={14} /> 历史会话</Btn><Btn disabled={remote || loading || !!busy || tab === 'diagnosis'} onClick={() => { void load(); }}><Ico name="refresh" size={14} /> {loading ? '检测中…' : '重新检测'}</Btn></div></div>
     {remote ? <div className="card"><Empty icon="⌘" title="在电脑客户端管理本地资源" hint="远程控制台不开放本机插件、提示词和数据库写入。请在电脑上的云桥 AI 打开此页；远程查看会话可使用「历史会话」。" /></div> : <>
@@ -107,9 +126,22 @@ export default function CodexEnhance({ go }: PageProps) {
       {tab === 'diagnosis' && <div className="card"><div className="card-title">历史会话批量修复</div><p>检查供应商归属、会话路径与原生消息索引。支持选择会话、预览改动、自动备份和按批次恢复。</p><Btn variant="primary" onClick={() => setConfirmRepair(true)}>打开批量修复</Btn></div>}
       {tab === 'advanced' && <>
         <div className="card" style={{ marginBottom: 18 }}><div className="card-title">Codex 配置<span className="sub">显式保存 · 备份原文件 · 重启后生效</span></div>
-          <div className="notice">参数是否支持取决于 Codex 版本和当前模型。留空表示移除覆盖值，使用客户端默认设置。</div>
+          <div className="notice row wrap"><div className="grow">参数是否支持取决于 Codex 版本和当前模型。窗口和阈值未配置时显示建议值。清空输入框并保存可移除覆盖，恢复客户端默认设置。
+            <p>应用默认上下文会将窗口设为 {defaultContext} tokens，自动压缩阈值设为 {defaultCompactLimit} tokens。</p>
+          </div><Btn size="sm" disabled={!flags || loading || !!busy || defaultContextSaved} onClick={() => perform('context-defaults', 'codex.setFlag', { key: 'model_context_window', value: defaultContext })}>应用默认上下文</Btn></div>
           {errors['codex.flags'] && <div className="notice warning">{errors['codex.flags']}</div>}
-          <div className="grid cols-2">{flags?.schema.map(f => <Field key={f.key} label={f.label} hint={f.hint}><div className="row" style={{ gap: 8 }}>{f.type === 'enum' || f.type === 'bool' ? <select className="select grow" value={flagDrafts[f.key] || ''} onChange={e => setFlagDrafts({ ...flagDrafts, [f.key]: e.target.value })}><option value="">使用默认设置</option>{(f.type === 'bool' ? ['true', 'false'] : f.options || []).map(o => <option key={o} value={o}>{o}</option>)}</select> : <input className="input mono grow" inputMode="numeric" value={flagDrafts[f.key] || ''} onChange={e => setFlagDrafts({ ...flagDrafts, [f.key]: e.target.value })} placeholder="使用默认设置" />}<Btn size="sm" disabled={!!busy || flagUnchanged(f)} onClick={() => saveFlag(f)}>保存</Btn></div>{f.key === 'model_context_window' && <ContextCompactHint value={/^\d+$/.test(flagDrafts[f.key] || '') ? Number(flagDrafts[f.key]) : undefined} id="codex-context-compact-hint" />}</Field>)}</div>
+          <div className="grid cols-2">{flags?.schema.map(f => {
+            const draft = flagDrafts[f.key] || '';
+            const contextField = f.key === 'model_context_window' || f.key === 'model_auto_compact_token_limit';
+            return <Field key={f.key} label={f.label} hint={f.hint}>
+              <div className="row" style={{ gap: 8 }}>
+                {f.type === 'enum' || f.type === 'bool' ? <select className="select grow" aria-label={f.label} value={draft} onChange={e => setFlagDrafts({ ...flagDrafts, [f.key]: e.target.value })}><option value="">使用默认设置</option>{(f.type === 'bool' ? ['true', 'false'] : f.options || []).map(o => <option key={o} value={o}>{o}</option>)}</select> : <input className="input mono grow" aria-label={f.label} inputMode="numeric" value={draft} onChange={e => setFlagDrafts({ ...flagDrafts, [f.key]: e.target.value })} placeholder="使用默认设置" />}
+                <Btn size="sm" disabled={loading || !!busy || flagUnchanged(f)} onClick={() => saveFlag(f)}>保存</Btn>
+              </div>
+              {contextField && draft && !flags.flags[f.key] && <div className="hint">此项尚未写入 config.toml，保存后生效。</div>}
+              {f.key === 'model_context_window' && <ContextCompactHint value={/^\d+$/.test(draft) ? Number(draft) : undefined} id="codex-context-compact-hint" />}
+            </Field>;
+          })}</div>
         </div>
         <div className="card"><div className="card-title">桌面插件与市场</div><p>自动识别 ChatGPT 桌面版，连接后启用内置增强、拓展包和插件市场。</p><Btn onClick={() => go('plugins')}>前往插件中心 →</Btn></div>
       </>}
