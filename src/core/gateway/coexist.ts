@@ -5,6 +5,7 @@ import type { IncomingMessage } from 'node:http';
 import * as zlib from 'node:zlib';
 import { parse } from 'smol-toml';
 import { codexHome } from '../codex.js';
+import { providerAllowsAnonymous } from '../providerEndpoint.js';
 import { applyContextDefaults, defaultAutoCompactTokenLimit, isValidContextWindow } from '../modelContext.js';
 import type { AuroraStore } from '../store/index.js';
 import { parseCodexHistoryRoute, type CodexHistoryTarget } from './historyRoute.js';
@@ -242,8 +243,8 @@ export function getCoexistCatalog(store: AuroraStore, persist = true): CoexistCa
   }
   for (const provider of store.listProviders()) {
     let local = false;
-    try { const hostname = new URL(provider.baseUrl).hostname.replace(/^\[|\]$/g, ''); local = hostname === 'localhost' || hostname === '::1' || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname); } catch { /* invalid URLs are not exposed */ }
-    if (!provider.enabled || provider.id === 'official' || !provider.apiKeys.some(key => key.enabled && (key.key || local))) continue;
+    try { local = providerAllowsAnonymous(new URL(provider.baseUrl).hostname, provider.apiKeys); } catch { /* invalid URLs are not exposed */ }
+    if (!provider.enabled || provider.id === 'official' || (!local && !provider.apiKeys.some(key => key.enabled && key.key.trim()))) continue;
     for (const model of provider.models) {
       if (!model.id || model.id.length > 400 || /[\r\n\0]/.test(model.id)) continue;
       const contextWindow = applyContextDefaults({ id: model.id, ...(isValidContextWindow(model.contextWindow) ? { contextWindow: model.contextWindow } : {}) }).contextWindow;

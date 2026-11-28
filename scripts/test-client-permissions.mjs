@@ -77,6 +77,34 @@ try {
     assert.deepEqual(parsed.permissions.deny, ['Bash(rm:*)']); assert.equal(parsed.skipDangerousModePermissionPrompt, undefined);
     assert(f.adapter.disconnect(result.backup).ok); assert.equal(read(f.config), claudeOriginal);
   });
+  await test('Claude Code selects official API key versus gateway bearer, removes the competing credential and restores it', () => {
+    const original = JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'old-bearer', ANTHROPIC_API_KEY: 'old-key', KEEP: 'yes' } });
+    const f = fixture('claude-auth-scheme', 'claude-code', original);
+    let previousBackup;
+    for (const [mode, baseUrl, expected] of [
+      ['direct', 'https://api.anthropic.com/v1', 'ANTHROPIC_API_KEY'],
+      ['direct', 'https://api.anthropic.com.example.test/v1', 'ANTHROPIC_AUTH_TOKEN'],
+      ['gateway', 'https://api.anthropic.com', 'ANTHROPIC_AUTH_TOKEN'],
+    ]) {
+      const ctx = { ...f.context, mode, provider: { ...f.context.provider, baseUrl }, previousBackup };
+      const result = apply(f, ctx), env = JSON.parse(read(f.config)).env;
+      const other = expected === 'ANTHROPIC_API_KEY' ? 'ANTHROPIC_AUTH_TOKEN' : 'ANTHROPIC_API_KEY';
+      assert.equal(env[expected], mode === 'gateway' ? ctx.token : ctx.provider.apiKeys[0].key);
+      assert.equal(env[other], undefined); assert.equal(env.KEEP, 'yes'); assert.equal(f.adapter.matchesConfiguration(ctx), true);
+      const posix = api.exportEnvScript(ctx, 'anthropic', 'darwin'), windows = api.exportEnvScript(ctx, 'anthropic', 'win32');
+      assert(posix.includes('unset ' + other)); assert(posix.includes('export ' + expected + '='));
+      assert(windows.includes('Remove-Item Env:' + other + ' ')); assert(windows.includes('$env:' + expected + '='));
+      previousBackup = result.backup;
+    }
+    assert(f.adapter.disconnect(previousBackup).ok); assert.equal(read(f.config), original);
+  });
+  await test('Claude Code reports active Mantle, Anthropic AWS and Google Cloud configurations before writing', () => {
+    for (const key of ['CLAUDE_CODE_USE_MANTLE', 'CLAUDE_CODE_USE_ANTHROPIC_AWS', 'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD']) {
+      const original = JSON.stringify({ env: { [key]: '1' } }), f = fixture(key, 'claude-code', original);
+      assert.match(f.adapter.preview(f.context).message, /云平台认证/); assert.equal(f.adapter.connect(f.context).ok, false); assert.equal(read(f.config), original);
+      write(f.config, JSON.stringify({ env: { [key]: '0' } })); assert(f.adapter.preview(f.context).ok);
+    }
+  });
   await test('Claude restrictions fail clearly without removing configured policy or cloud authentication', () => {
     for (const [name, value] of Object.entries({ permission: { permissions: { disableBypassPermissionsMode: 'disable' } }, malformed: { permissions: [] }, login: { forceLoginMethod: 'claudeai' }, organization: { forceLoginOrgUUID: 'fixture-org' }, cloud: { env: { CLAUDE_CODE_USE_BEDROCK: '1' } } })) {
       const original = JSON.stringify(value), f = fixture('restricted-' + name, 'claude-code', original);
@@ -145,12 +173,35 @@ try {
   await test('Claude global onboarding path follows both default and custom configuration directories', () => {
     const home = path.join(root, 'path-user'), custom = path.join(root, 'custom-claude');
     fs.mkdirSync(home, { recursive: true });
-    for (const [dir, expected] of [[undefined, path.join(home, '.claude.json')], [path.join(home, '.claude'), path.join(home, '.claude.json')], [custom, path.join(custom, '.claude.json')]]) {
+    for (const [dir, expected] of [[undefined, path.join(home, '.claude.json')], [path.join(home, '.claude'), path.join(home, '.claude', '.claude.json')], [custom, path.join(custom, '.claude.json')]]) {
       const env = { HOME: home, USERPROFILE: home, SYSTEMROOT: process.env.SYSTEMROOT || '' };
       if (dir) env.CLAUDE_CONFIG_DIR = dir;
       const result = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(require(process.argv[1]).getAdapter("claude-code").configPaths()))', bundle], { env, encoding: 'utf8', windowsHide: true });
       assert.equal(result.status, 0, result.stderr); assert.deepEqual(JSON.parse(result.stdout), [path.join(dir || path.join(home, '.claude'), 'settings.json'), expected]);
     }
+  });
+  await test('An older home-level marker restores after switching to the explicit default CLAUDE_CONFIG_DIR', () => {
+    const f = fixture('legacy-default-dir', 'claude-code'), home = path.join(root, 'legacy-actual-home');
+    fs.mkdirSync(home);
+    const verify = `
+      const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+      const adapter = require(process.argv[1]).getAdapter('claude-code'), ctx = { ...JSON.parse(process.argv[2]), skipOnboarding: true };
+      const old = path.join(process.env.USERPROFILE, '.claude.json'), original = '{"hasCompletedOnboarding":false,"keep":1}';
+      fs.writeFileSync(old, original);
+      const first = adapter.connect(ctx); assert(first.ok, first.message);
+      process.env.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE, '.claude');
+      const current = path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json');
+      const preview = adapter.preview({ ...ctx, previousBackup: first.backup }); assert(preview.ok, preview.message);
+      assert.equal(preview.files.length, 3); assert.equal(fs.existsSync(current), false);
+      const next = adapter.connect({ ...ctx, previousBackup: first.backup, expectedRevision: preview.revision }); assert(next.ok, next.message);
+      assert(JSON.parse(fs.readFileSync(current)).hasCompletedOnboarding);
+      const restored = adapter.disconnect(next.backup); assert(restored.ok, restored.message);
+      assert.equal(fs.readFileSync(old, 'utf8'), original); assert.equal(fs.existsSync(current), false);
+    `;
+    const result = spawnSync(process.execPath, ['-e', verify, bundle, JSON.stringify(f.context)], {
+      env: { HOME: home, USERPROFILE: home, SYSTEMROOT: process.env.SYSTEMROOT || '' }, encoding: 'utf8', windowsHide: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
   });
   await test('action apply, diagnostics and restore share optional-file and permission choices', async () => {
     const f = fixture('action-options', 'claude-code', claudeOriginal);

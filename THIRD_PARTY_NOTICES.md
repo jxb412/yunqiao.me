@@ -16,11 +16,13 @@ Public and full plugin markets are indexes of independently licensed plugins. Th
 
 Electron, React, Vite, esbuild, TypeScript and Capacitor retain their respective notices and licenses supplied in their packages. Electron redistributes Chromium and other dependencies with their upstream notices. cc-switch and magpie informed workflow research; their code is not vendored. sub2api is integrated through its published HTTP API; its source is not bundled in this project.
 
-## React and React DOM
+## React, React DOM and jsonc-parser
 
 MIT License
 
-Copyright (c) Facebook, Inc. and its affiliates.
+React and React DOM are Copyright (c) Facebook, Inc. and its affiliates.
+
+jsonc-parser is Copyright (c) Microsoft.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

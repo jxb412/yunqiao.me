@@ -62,6 +62,24 @@ try {
     try { const result = await run(); assert.equal(attempts, 0, 'API 模式不得尝试读取官方身份'); return result; }
     finally { fs.readFileSync = originalRead; fs.lstatSync = originalStat; }
   };
+  await check('诊断识别已应用的 API 模型目录，并报告目录或配置的实际变更', async () => {
+    const f = fixture('diagnose');
+    write(f.catalogDefault, '{"outside":true}');
+    const connected = await f.connect(); assert(connected.ok, connected.message);
+    const config = read(f.config), file = f.catalog, original = read(file);
+    assert.notEqual(file, f.catalogDefault);
+    const parameters = async () => {
+      const report = await api.runAction(f.deps, 'agent.diagnose', { agentId: 'codex-cli' });
+      assert(report.ok, report.message); noSecrets(report);
+      return report.checks.find(check => check.id === 'parameters').status;
+    };
+    assert.equal(await parameters(), 'ok');
+    fs.unlinkSync(file); assert.equal(await parameters(), 'warning'); assert(!fs.existsSync(file));
+    write(file, original.replace('Native gpt-5.4', 'Edited gpt-5.4')); assert.equal(await parameters(), 'warning');
+    write(file, original); write(f.config, config.replace('fixture-gateway-secret', 'changed-gateway-secret'));
+    assert.equal(await parameters(), 'warning');
+    assert.equal(read(file), original); assert(read(f.config).includes('changed-gateway-secret'));
+  });
   await check('API 网关无需官方身份，挂载当前供应商全部文本模型并保留 xhigh', async () => {
     const f = fixture('basic');
     await guardOfficialFiles(async () => {

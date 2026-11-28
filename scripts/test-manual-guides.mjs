@@ -61,6 +61,8 @@ check('OpenCode V1 and V2 map a safe selector to the full upstream model ID', ()
   assert.equal(v1.provider.yunqiao.models.current.id, base.parameters.model);
   assert.equal(v1.provider.yunqiao.options.apiKey, placeholder); assert.equal(v1.providers, undefined);
   const v2 = JSON.parse(make('opencode', { variant: 'opencode-v2' }).document.content);
+  assert.equal(make('opencode').docs[0].url, 'https://opencode.ai/v1/docs/providers/');
+  assert.equal(make('opencode', { variant: 'opencode-v2' }).docs[0].url, 'https://opencode.ai/docs/providers/');
   assert.equal(v2.providers.yunqiao.package, '@opencode/ai/providers/openai-compatible');
   assert.equal(v2.providers.yunqiao.models.current.modelID, base.parameters.model);
   assert.equal(v2.providers.yunqiao.settings.baseURL, base.parameters.baseUrl); assert.equal(v2.provider, undefined);

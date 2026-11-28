@@ -118,13 +118,25 @@ try {
   assert.equal(adapter.disconnect(directApplied.backup).ok, true);
   console.log('PASS real CLI without auth.json loads supplier URL, key and default model from generated direct config while the gateway is stopped');
   supplierCalls.length = 0;
-  await gateway.start('127.0.0.1', gatewayPort);
   fs.writeFileSync(authFile, authText);
+  const anonymousContext = { ...directContext, provider: { ...directContext.provider, apiKeys: [] } };
+  const anonymousPreview = adapter.preview(anonymousContext); assert(anonymousPreview.ok, anonymousPreview.message);
+  const anonymousApplied = adapter.connect({ ...anonymousContext, expectedRevision: anonymousPreview.revision }); assert(anonymousApplied.ok, anonymousApplied.message);
+  assert.equal((await runCli()).answer, 'RELAY_NATIVE_OK'); assert.equal(supplierCalls.length, 1);
+  assert.equal(supplierCalls[0].headers.authorization, undefined); assert(!JSON.stringify(supplierCalls).includes(fakeToken));
+  assert.equal(fs.readFileSync(authFile, 'utf8'), authText); assert(adapter.disconnect(anonymousApplied.backup).ok);
+  console.log('PASS anonymous direct supplier receives no Authorization header with an existing official login');
+  supplierCalls.length = 0;
+  await gateway.start('127.0.0.1', gatewayPort);
 
+  // A shell may also configure other OpenAI clients. Its environment must
+  // not redirect Codex away from the explicit, adapter-generated base URL.
+  childEnv.OPENAI_BASE_URL = proxy + '/unused-openai-base';
   const preview = adapter.preview(context); assert.equal(preview.ok, true, preview.message);
   const applied = adapter.connect({ ...context, expectedRevision: preview.revision }); assert.equal(applied.ok, true, applied.message);
   const relay = await runCli(`${supplier.id}/gpt-fixture`);
   assert.equal(relay.answer, 'RELAY_NATIVE_OK'); assert.equal(supplierCalls.length, 1); assert.equal(officialCalls.length, 0); assert.equal(supplierCalls[0].body.model, 'gpt-fixture'); assert.equal(supplierCalls[0].headers.authorization, 'Bearer fixture-supplier-key'); assert.ok(!JSON.stringify(supplierCalls).includes(fakeToken)); assert.ok(!JSON.stringify(supplierCalls).includes('fixture-account'));
+  assert.ok(!blocked.some(url => url.includes('/unused-openai-base')));
   console.log('PASS real CLI accepts adapter-generated strict config and routes relay model through Aurora without OAuth leakage');
   const official = await runCli('official/gpt-fixture');
   assert.equal(official.answer, 'OFFICIAL_NATIVE_OK'); assert.equal(officialCalls.length, 1); assert.equal(supplierCalls.length, 1); assert.equal(officialCalls[0].body.model, 'gpt-fixture'); assert.equal(officialCalls[0].headers.authorization, `Bearer ${fakeToken}`);
@@ -163,7 +175,7 @@ try {
   } else { assert.equal(profileRun.answer, 'RELAY_NATIVE_OK'); console.log('PASS actual CLI accepts legacy quoted active profile after root-only transport/catalog correction'); }
   assert.equal(supplierCalls.length, checks - 2); assert.equal(officialCalls.length, 1);
   assert.equal(fs.readFileSync(authFile, 'utf8'), authText);
-  console.log(`Native client routing: ${checks + 2} checks passed (API gateway, direct and coexistence); denied external background connections: ${blocked.length}`);
+  console.log(`Native client routing: ${checks + 3} checks passed (API gateway, direct and coexistence); denied external background connections: ${blocked.length}`);
 } finally {
   if (gateway) await gateway.stop();
   for (const server of [supplierMock, officialMock, denyProxy]) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }

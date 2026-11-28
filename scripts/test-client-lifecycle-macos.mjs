@@ -126,16 +126,16 @@ try {
     assert.throws(() => api.macTerminalCommand('/tmp/codex\nwhoami', f.home));
   });
   await check('Terminal pins custom and default config directories without exposing credentials or unrelated overrides', async () => {
-    for (const [agentId, binary, key, folder] of [['codex-cli', 'codex', 'CODEX_HOME', '.codex'], ['claude-code', 'claude', 'CLAUDE_CONFIG_DIR', '.claude']]) {
+    for (const [agentId, binary, key, folder] of [['codex-cli', 'codex', 'CODEX_HOME', '.codex'], ['claude-code', 'claude', 'CLAUDE_CONFIG_DIR', '.claude'], ['gemini-cli', 'gemini', 'GEMINI_CLI_HOME', '']]) {
       const f = fixture({ isolatedHome: () => undefined });
       const command = path.join(f.home, binary); fs.writeFileSync(command, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
       const target = await f.driver.resolveTarget(agentId, { kind: 'cli', name: binary, binaries: [binary] }, { installed: true, configured: false, command });
       const custom = path.join(f.home, "custom ' config; $(touch no) `id`");
-      f.host.configurationEnvironment = () => ({ [key]: custom, OPENAI_API_KEY: 'fixture-secret-api-key', ANTHROPIC_AUTH_TOKEN: 'fixture-secret-auth', GEMINI_CLI_HOME: '/unrelated/gemini' });
+      f.host.configurationEnvironment = () => ({ GEMINI_CLI_HOME: '/unrelated/gemini', [key]: custom, OPENAI_API_KEY: 'fixture-secret-api-key', ANTHROPIC_AUTH_TOKEN: 'fixture-secret-auth' });
       await f.driver.openTerminal(target, f.home);
       let request = JSON.parse(f.state.calls.at(-1).args.at(-1));
       assert.equal(request.command, api.macTerminalCommand(fs.realpathSync.native(command), f.home, { ...(agentId === 'claude-code' ? { HOME: f.home } : {}), [key]: custom }));
-      assert(!request.command.includes('fixture-secret')); assert(!request.command.includes('GEMINI_CLI_HOME'));
+      assert(!request.command.includes('fixture-secret')); assert(!request.command.includes('/unrelated/gemini'));
       f.host.configurationEnvironment = () => ({}); await f.driver.openTerminal(target, f.home);
       request = JSON.parse(f.state.calls.at(-1).args.at(-1));
       assert.equal(request.command, api.macTerminalCommand(fs.realpathSync.native(command), f.home, agentId === 'claude-code' ? { HOME: f.home, CLAUDE_CONFIG_DIR: undefined } : { [key]: path.join(f.home, folder) }));

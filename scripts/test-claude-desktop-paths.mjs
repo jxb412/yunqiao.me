@@ -30,9 +30,18 @@ try {
     const f = fixture(); const found = api.resolveClaudeDesktopConfig({ ...f.options, environment: { LOCALAPPDATA: path.join(temporary, 'foreign') } });
     assert.equal(found.status, 'resolved'); assert.equal(found.source, 'standard'); assert.equal(found.root, f.base); assert(!fs.existsSync(f.base));
   });
-  check('An existing Store package selects its own LocalCache even before first 3P setup', () => {
-    const f = fixture(); fs.mkdirSync(f.pkg, { recursive: true }); const found = api.resolveClaudeDesktopConfig(f.options);
-    assert.equal(found.root, f.msix); assert.equal(found.source, 'msix'); assert(!fs.existsSync(f.msix)); assert.equal(adapter.configPaths()[0], api.claudeDesktopConfigFiles(f.msix)[0]);
+  check('Fresh MSIX registration follows Windows version until actual app data exists', () => {
+    const f = fixture(); fs.mkdirSync(f.pkg, { recursive: true });
+    assert.equal(api.resolveClaudeDesktopConfig({ ...f.options, windowsBuild: 19045 }).root, f.msix);
+    assert.equal(api.resolveClaudeDesktopConfig({ ...f.options, windowsBuild: 22631 }).root, f.base);
+    assert(!fs.existsSync(f.msix));
+    write(profile(f.base), profileValue);
+    assert.equal(api.resolveClaudeDesktopConfig({ ...f.options, windowsBuild: 19045 }).root, f.base);
+    assert.equal(adapter.configPaths()[0], api.claudeDesktopConfigFiles(f.base)[0]);
+  });
+  check('An existing MSIX profile survives a Windows 11 upgrade', () => {
+    const f = fixture(); write(profile(f.msix), profileValue);
+    assert.equal(api.resolveClaudeDesktopConfig({ ...f.options, windowsBuild: 22631 }).root, f.msix);
   });
   check('Unrelated package names and a standard installation do not select a Store root', () => {
     const f = fixture(); fs.mkdirSync(path.join(f.base, 'Packages', 'OtherClaude_pzs8sxrjxfjjc'), { recursive: true }); write(profile(f.base), profileValue);
@@ -45,9 +54,13 @@ try {
     assert.equal(adapter.preview(context).ok, false); assert.equal(adapter.connect(context).ok, false);
     assert.deepEqual(fs.readFileSync(profile(f.base)), before); assert.deepEqual(fs.readFileSync(profile(f.msix)), other); assert(!fs.existsSync(path.join(f.base, 'Claude')));
   });
-  check('Multiple Store package identities require a clear target instead of newest-directory guessing', () => {
-    const f = fixture(); fs.mkdirSync(f.pkg, { recursive: true }); fs.mkdirSync(path.join(f.base, 'Packages', 'Claude_abcdefghijklm'), { recursive: true });
-    assert.equal(api.resolveClaudeDesktopConfig(f.options).status, 'ambiguous'); assert.equal(adapter.connect(context).ok, false);
+  check('A similarly named package from another publisher never receives Claude credentials', () => {
+    const f = fixture(), foreign = path.join(f.base, 'Packages', 'Claude_abcdefghijklm', 'LocalCache', 'Local');
+    write(profile(foreign), profileValue);
+    assert.equal(api.resolveClaudeDesktopConfig(f.options).root, f.base);
+    const result = adapter.connect(context); assert(result.ok, result.message);
+    assert(!fs.existsSync(api.claudeDesktopConfigFiles(foreign)[3]));
+    assert(adapter.disconnect(result.backup).ok);
   });
   check('Preview and application use only the Store root and preserve unrelated profiles', () => {
     const f = fixture(); write(profile(f.msix), profileValue); const files = api.claudeDesktopConfigFiles(f.msix);
@@ -60,8 +73,27 @@ try {
     files.forEach((file, i) => originals[i] ? assert.deepEqual(fs.readFileSync(file), originals[i]) : assert(!fs.existsSync(file)));
   });
   check('An install appearing after preview invalidates application without modifying either root', () => {
-    const f = fixture(); write(profile(f.base), profileValue); const preview = adapter.preview(context); assert(preview.ok); fs.mkdirSync(f.pkg, { recursive: true });
-    const applied = adapter.connect({ ...context, expectedRevision: preview.revision }); assert.equal(applied.ok, false); assert(!fs.existsSync(api.claudeDesktopConfigFiles(f.base)[0])); assert(!fs.existsSync(f.msix));
+    const f = fixture(); write(profile(f.base), profileValue); const preview = adapter.preview(context); assert(preview.ok); write(profile(f.msix), profileValue);
+    const applied = adapter.connect({ ...context, expectedRevision: preview.revision }); assert.equal(applied.ok, false); assert(!fs.existsSync(api.claudeDesktopConfigFiles(f.base)[0])); assert(!fs.existsSync(api.claudeDesktopConfigFiles(f.msix)[3]));
+  });
+  check('Direct Anthropic uses its native API-key header; third-party and local gateways keep bearer credentials', () => {
+    const f = fixture(), paths = api.claudeDesktopConfigFiles(f.base);
+    let previousBackup;
+    for (const [mode, baseUrl, expected] of [
+      ['direct', 'https://api.anthropic.com/v1', 'x-api-key'],
+      ['direct', 'https://relay.invalid/v1', 'bearer'],
+      ['gateway', 'https://api.anthropic.com', 'bearer'],
+    ]) {
+      const ctx = { ...context, mode, provider: { ...provider, baseUrl }, previousBackup };
+      const preview = adapter.preview(ctx); assert(preview.ok, preview.message);
+      assert(!JSON.stringify(preview).includes(provider.apiKeys[0].key)); assert(!JSON.stringify(preview).includes(context.token));
+      const applied = adapter.connect({ ...ctx, expectedRevision: preview.revision }); assert(applied.ok, applied.message);
+      const profile = JSON.parse(fs.readFileSync(paths[3]));
+      assert.equal(profile.inferenceCredentialKind, 'static'); assert.equal(profile.inferenceGatewayAuthScheme, expected);
+      assert.equal(profile.inferenceGatewayApiKey, mode === 'gateway' ? context.token : provider.apiKeys[0].key);
+      previousBackup = applied.backup;
+    }
+    assert(adapter.disconnect(previousBackup).ok); assert(paths.every(file => !fs.existsSync(file)));
   });
   check('Claude startup preferences survive switching and restoring a previously absent 3P config', () => {
     const f = fixture(), paths = api.claudeDesktopConfigFiles(f.base);
@@ -114,7 +146,7 @@ try {
     const restored = adapter.disconnect(applied.backup); assert(restored.ok, restored.message); assert.deepEqual(fs.readFileSync(profile(f.msix)), other); assert(!fs.existsSync(api.claudeDesktopConfigFiles(f.base)[3]));
   });
   check('Undo refuses external backup roots and retains external edits to managed configuration', () => {
-    const f = fixture(); fs.mkdirSync(f.pkg, { recursive: true }); const applied = adapter.connect(context); assert(applied.ok);
+    const f = fixture(); write(profile(f.msix), profileValue); const applied = adapter.connect(context); assert(applied.ok);
     assert.throws(() => api.claudeDesktopRestorePaths(path.join(temporary, '.aurora-backups', 'forged.json'), f.options), /不属于/);
     const target = api.claudeDesktopConfigFiles(f.msix)[0]; write(target, { editedAfterConnection: true }); assert.equal(adapter.disconnect(applied.backup).ok, false); assert.equal(JSON.parse(fs.readFileSync(target)).editedAfterConnection, true);
   });
@@ -123,6 +155,18 @@ try {
     const store = new api.AuroraStore(path.join(f.home, 'store')); const result = api.syncLocalClients(store, { home: f.home, platform: 'win32', force: true });
     assert.equal(result.added, 1); assert.equal(store.listProviders()[0].apiKeys[0].key, profileValue.inferenceGatewayApiKey); assert(result.sources.some(source => source.status === 'ignored')); assert(result.sources.every(source => source.path.startsWith(f.msix)));
     write(profile(f.base), { ...profileValue, inferenceGatewayApiKey: 'sk-do-not-import-fixture' }); const ambiguous = api.syncLocalClients(store, { home: f.home, platform: 'win32', force: true }); assert.equal(ambiguous.added, 0); assert(ambiguous.warnings.some(warning => warning.includes('多个'))); assert.equal(store.listProviders().length, 1);
+  });
+  check('Local discovery accepts default static bearer and skips encrypted keys and inactive credentials', () => {
+    const f = fixture(), common = { inferenceProvider: 'gateway', inferenceGatewayBaseUrl: 'https://provider.invalid' };
+    write(profile(f.msix, 'default'), { ...common, inferenceGatewayApiKey: 'sk-default-bearer-fixture' });
+    write(profile(f.msix, 'sealed'), { ...common, inferenceCredentialKind: 'static', inferenceGatewayApiKey: '__sealed__:v1:fixture' });
+    write(profile(f.msix, 'oidc'), { ...common, inferenceCredentialKind: 'external-idp', inferenceGatewayApiKey: 'sk-stale-inactive-fixture' });
+    write(profile(f.msix, 'helper'), { ...common, inferenceCredentialHelper: 'fixture-helper', inferenceGatewayApiKey: 'sk-stale-helper-fixture' });
+    const store = new api.AuroraStore(path.join(f.home, 'store'));
+    const result = api.syncLocalClients(store, { home: f.home, platform: 'win32', force: true });
+    assert.equal(result.added, 1); assert.equal(store.listProviders()[0].apiKeys[0].key, 'sk-default-bearer-fixture');
+    assert.equal(result.sources.filter(s => s.status === 'unsupported').length, 2);
+    assert.equal(result.sources.filter(s => s.status === 'missing-key').length, 1);
   });
   check('Linked package roots cannot escape the private profile or read a foreign credential', () => {
     const f = fixture(), outside = path.join(temporary, 'linked-target'); write(profile(path.join(outside, 'LocalCache', 'Local')), profileValue);

@@ -86,7 +86,7 @@ export class ReadOnlyJobScheduler {
   }
 }
 
-const environmentKeys = ['AURORA_CLIENT_HOME', 'CODEX_HOME', 'CODEX_SQLITE_HOME', 'CLAUDE_CONFIG_DIR'] as const;
+const environmentKeys = ['AURORA_CLIENT_HOME', 'CODEX_HOME', 'CODEX_SQLITE_HOME', 'CLAUDE_CONFIG_DIR', 'GEMINI_CLI_HOME'] as const;
 const scheduler = new ReadOnlyJobScheduler({
   context: () => Object.fromEntries(environmentKeys.map(key => [key, process.env[key]])),
   worker: (job, input, context) => {

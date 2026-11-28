@@ -141,6 +141,63 @@ window.renderPage=(page=window.page||'agents')=>{window.page=page;const Page=pag
             expect(dialog.get_by_label('手动模型 ID', exact=True)).to_have_count(0)
             checks.append('Official-account models stay restricted to the verified native model catalog')
 
+            reset()
+            page.evaluate("""() => {
+                window.state.providers = [{...window.state.presets[0], id:'fixture', enabled:true, apiKeys:[],
+                    models:[{id:'current-model'}]}];
+                window.state.agents['codex-cli'] = {id:'codex-cli', connected:false, providerId:'fixture', model:'removed-model'};
+                window.renderPage();
+            }""")
+            dialog = wizard()
+            dialog.get_by_role('button', name='下一步：选择模型 →', exact=True).click()
+            expect(dialog.get_by_label('选择模型', exact=True)).to_have_value('current-model')
+            dialog.get_by_role('button', name='预览配置 →', exact=True).click()
+            expect(dialog.get_by_role('button', name='保存配置', exact=True)).to_be_visible()
+            assert page.evaluate("window.calls.filter(c=>c.action==='agent.preview').at(-1).payload.model") == 'current-model'
+            assert page.evaluate("window.calls.filter(c=>c.action==='provider.save').length") == 0
+            checks.append('Reopening a connection uses an available model and never re-adds a deleted ID implicitly')
+
+            reset()
+            page.evaluate("""() => {
+                window.state.codexCoexist = {identity:{available:false}, warnings:[], models:[]};
+                window.state.providers = [{...window.state.presets[0], id:'replacement', enabled:true, apiKeys:[],
+                    models:[{id:'current-model'}]}];
+                window.state.agents['codex-cli'] = {id:'codex-cli', connected:true, providerId:'removed',
+                    model:'old-model', authMode:'coexist'};
+                window.renderPage();
+            }""")
+            page.get_by_role('button', name='更换配置 →', exact=True).click()
+            dialog = page.get_by_role('dialog', name='配置 Codex CLI', exact=True)
+            coexist = dialog.get_by_role('checkbox', name='保留官方账号并与第三方模型共存')
+            expect(coexist).to_be_checked()
+            coexist.uncheck()
+            dialog.get_by_role('button', name='下一步：选择模型 →', exact=True).click()
+            dialog.get_by_role('button', name='预览配置 →', exact=True).click()
+            expect(dialog.get_by_role('button', name='保存配置', exact=True)).to_be_visible()
+            selected = page.evaluate("window.calls.filter(c=>c.action==='agent.preview').at(-1).payload")
+            assert (selected['providerId'], selected['model'], selected['authMode']) == ('replacement', 'current-model', 'api')
+            checks.append('A removed provider and signed-out official account allow an explicit switch from coexistence to API')
+
+            for client_id, protocol in [('gemini-cli', 'gemini'), ('claude-code', 'anthropic')]:
+                reset()
+                page.evaluate("""([id, protocol]) => {
+                    window.state.agentCatalog = [{...window.state.agentCatalog[0], id, name:id, protocol}];
+                    window.state.providers = [{...window.state.presets[0], id:'local', enabled:true, format:protocol,
+                        baseUrl:'http://127.0.0.1:11434', apiKeys:[], models:[{id:'local-model'}]}];
+                    window.state.agents[id] = {id, providerId:'local', mode:'direct', model:'local-model'};
+                    window.renderPage();
+                }""", [client_id, protocol])
+                page.get_by_role('button', name='开始配置 →', exact=True).click()
+                dialog = page.get_by_role('dialog')
+                dialog.get_by_role('button', name='下一步：选择模型 →', exact=True).click()
+                method = dialog.get_by_label('接入方式', exact=True)
+                expect(method).to_have_value('gateway')
+                expect(method.locator('option[value="direct"]')).to_be_disabled()
+                dialog.get_by_role('button', name='预览配置 →', exact=True).click()
+                expect(dialog.get_by_role('button', name='保存配置', exact=True)).to_be_visible()
+                assert page.evaluate("window.calls.filter(c=>c.action==='agent.preview').at(-1).payload.mode") == 'gateway'
+            checks.append('Gemini CLI and Claude Code with an anonymous local upstream can preview a working gateway configuration')
+
             reset(); page.evaluate('window.scanOk=false')
             page.get_by_role('button', name='检测本地客户端', exact=True).click()
             expect(page.get_by_role('alert')).to_contain_text('部分配置读取失败，请检查文件权限')

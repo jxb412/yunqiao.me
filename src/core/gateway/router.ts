@@ -1,5 +1,6 @@
 import type { AuroraStore, ApiKey, Provider, ProviderModel, RouteMode } from '../store/index.js';
 import { nowIso } from '../util.js';
+import { localProviderHost } from '../providerEndpoint.js';
 
 export interface Candidate {
   provider: Provider;
@@ -33,10 +34,12 @@ export class Router {
     const now = Date.now();
     let allowsEmpty = false;
     try {
-      const host = new URL(p.baseUrl).hostname.replace(/^\[|\]$/g, '');
-      allowsEmpty = host === 'localhost' || host === '::1' || /^127\.|^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(host);
+      allowsEmpty = localProviderHost(new URL(p.baseUrl).hostname);
     } catch { return []; }
-    const usable = p.apiKeys.filter((k) => {
+    // Imported local servers can have no slots at all. A disabled slot still means disabled.
+    const slots: ApiKey[] = allowsEmpty && !p.apiKeys.length
+      ? [{ id: 'anonymous', label: '本地免密', key: '', enabled: true, weight: 1 }] : p.apiKeys;
+    const usable = slots.filter((k) => {
       if (!k.enabled) return false;
       const slot = JSON.stringify([p.id, k.id]), cooldown = this.volatileCooldowns.get(slot);
       if (cooldown && cooldown.key === k.key && cooldown.until > now) return false;

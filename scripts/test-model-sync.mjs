@@ -142,7 +142,7 @@ try {
     assert(!JSON.stringify(observed.at(-1)).includes('old-')); assert.equal(observed.length, 3);
     passed += 3; console.log('PASS origin isolation for full drafts, partial saves and explicit replacement credentials');
   } finally { destination.closeAllConnections(); await new Promise(resolve => destination.close(resolve)); }
-  async function checkPages(format, pageResponse, verify) {
+  async function checkPages(format, pageResponse, verify, { pathname = '/relay', key = 'paging-fixture' } = {}) {
     const pages = [];
     const upstream = http.createServer((request, response) => {
       const url = new URL(request.url, 'http://localhost');
@@ -154,12 +154,35 @@ try {
     await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
     try {
       const provider = store.saveProvider({ name: 'paged catalog', format,
-        baseUrl: `http://127.0.0.1:${upstream.address().port}/relay`, models: [{ id: 'kept', inputPrice: 3 }],
-        apiKeys: [{ id: 'fixture', key: 'paging-fixture', label: '', enabled: true, weight: 1 }] });
+        baseUrl: `http://127.0.0.1:${upstream.address().port}${pathname}`, models: [{ id: 'kept', inputPrice: 3 }],
+        apiKeys: [{ id: 'fixture', key, label: '', enabled: true, weight: 1 }] });
       const result = await fetchProviderModels({ store }, { providerId: provider.id });
       verify({ result, pages, saved: store.getProvider(provider.id).models });
       passed++;
     } finally { upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); }
+  }
+  for (const [format, operation, expected] of [
+    ['openai-chat', '/relay/v2/chat/completions', '/relay/v2/models'],
+    ['openai-responses', '/relay/v1/responses', '/relay/v1/models'],
+    ['anthropic', '/relay/v1/messages', '/relay/v1/models'],
+    ['gemini', '/relay/v1alpha/models/gemini-model:streamGenerateContent', '/relay/v1alpha/models'],
+  ]) {
+    await checkPages(format, () => ({ body: { data: [{ id: 'discovered' }] } }), ({ result, pages }) => {
+      assert(result.ok, result.message); assert.deepEqual(pages.map(page => page.path), [expected]);
+      for (const header of ['authorization', 'x-api-key', 'x-goog-api-key']) assert.equal(pages[0].headers[header], undefined);
+    }, { pathname: operation, key: '' });
+  }
+  {
+    const p = store.saveProvider({ name: 'legacy endpoint', format: 'openai-chat', baseUrl: endpoint, models: [{ id: 'kept' }] });
+    const originalGet = store.getProvider.bind(store);
+    try {
+      for (const baseUrl of ['malformed', null, 'https://user:private@localhost/v1/responses', 'ftp://localhost']) {
+        store.getProvider = id => id === p.id ? { ...p, baseUrl } : originalGet(id);
+        const result = await fetchProviderModels({ store }, { providerId: p.id });
+        assert.equal(result.ok, false); assert.deepEqual(result.models, p.models); assert(!result.message.includes('private'));
+      }
+      passed++; console.log('PASS invalid legacy endpoints retain configured models and return a result');
+    } finally { store.getProvider = originalGet; }
   }
   const token = 'opaque/+&=?%';
   await checkPages('gemini', page => ({ body: page === 1 ? { models: [], nextPageToken: token }

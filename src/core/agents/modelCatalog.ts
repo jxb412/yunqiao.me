@@ -3,6 +3,7 @@ import { parse } from 'smol-toml';
 import type { AuroraStore } from '../store/index.js';
 import type { Provider, ProviderModel } from '../store/types.js';
 import { codexConfigPath } from '../codex.js';
+import { providerAllowsAnonymous } from '../providerEndpoint.js';
 import { applyContextDefaults, defaultAutoCompactTokenLimit, isValidContextWindow } from '../modelContext.js';
 import { atomicWrite, readText } from './configFiles.js';
 import { nativeModelId, readNativeModelMetadata, validatedNativeModel } from './nativeModelMetadata.js';
@@ -27,8 +28,7 @@ export function gatewayProviderAvailable(provider: Provider): boolean {
   try {
     const url = new URL(provider.baseUrl);
     if (!['http:', 'https:'].includes(url.protocol)) return false;
-    return provider.apiKeys.some(key => key.enabled && !!key.key)
-      || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    return provider.apiKeys.some(key => key.enabled && !!key.key.trim()) || providerAllowsAnonymous(url.hostname, provider.apiKeys);
   } catch { return false; }
 }
 

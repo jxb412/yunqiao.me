@@ -49,6 +49,43 @@ try {
   await build({ entryPoints: [path.join(workspace, 'src/core/agents/configFiles.ts')], outfile: bundle, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
   api = createRequire(import.meta.url)(bundle);
 
+  check('Equivalent spellings of a config path retain the first original and originally absent files', () => {
+    const f = installedFixture(2, [1]);
+    const aliases = f.paths.map(file => path.dirname(file) + path.sep + '.' + path.sep + path.basename(file));
+    const backup = api.applyPlan('fixture-client', aliases.map(file => api.planned(file, 'second selection')), f.backup);
+    api.restorePlan('fixture-client', backup, f.paths);
+    assert.equal(read(f.paths[0]), f.original[0]); assert.equal(fs.existsSync(f.paths[1]), false);
+  });
+  if (process.platform === 'win32') check('Windows config directory case changes preserve the first connection backup', () => {
+    const f = installedFixture(2, [1]);
+    const root = path.join(path.dirname(f.root), path.basename(f.root).toUpperCase());
+    const aliases = f.paths.map(file => path.join(root, path.basename(file)));
+    assert.equal(fs.realpathSync.native(root), fs.realpathSync.native(f.root));
+    const backup = api.applyPlan('fixture-client', aliases.map(file => api.planned(file, 'second selection')), f.backup);
+    api.restorePlan('fixture-client', backup, f.paths);
+    assert.equal(read(f.paths[0]), f.original[0]); assert.equal(fs.existsSync(f.paths[1]), false);
+  });
+  check('Restoring an unchanged config succeeds without replacing it', () => {
+    const f = fixture(2);
+    const backup = api.applyPlan('fixture-client', [api.planned(f.paths[0], f.installed[0]), api.planned(f.paths[1], f.original[1])]);
+    fs.renameSync = (from, to) => { assert.notEqual(to, f.paths[1], 'locked file must not be rewritten'); return rawRename(from, to); };
+    try { api.restorePlan('fixture-client', backup, f.paths); }
+    finally { fs.renameSync = rawRename; }
+    assert.equal(read(f.paths[0]), f.original[0]); assert.equal(read(f.paths[1]), f.original[1]);
+  });
+  check('A config link with an unavailable target survives preview and application', () => {
+    const f = fixture(1, [0]); fs.mkdirSync(f.root);
+    const [file] = f.paths, target = path.join(f.root, 'unavailable'), plan = f.plan();
+    try { fs.symlinkSync(target, file, 'file'); }
+    catch (error) {
+      if (process.platform !== 'win32' || error.code !== 'EPERM') throw error;
+      fs.mkdirSync(target); fs.symlinkSync(target, file, 'junction'); fs.rmdirSync(target);
+    }
+    assert.equal(fs.existsSync(file), false); assert(fs.lstatSync(file).isSymbolicLink());
+    assert.throws(() => api.planned(file, 'edited'), /不是普通文件/);
+    assert.throws(() => api.applyPlan('fixture-client', plan), /不是普通文件/);
+    assert(fs.lstatSync(file).isSymbolicLink()); assert.equal(fs.existsSync(target), false);
+  });
   check('Codex desktop pipe rotation is tolerated, but every other byte remains protected', () => {
     const root = path.join(scratch, `runtime-${++sequence}`), file = path.join(root, 'config.toml');
     const first = 'model = "fixture-model"\n[mcp_servers.node_repl.env]\nSKY_CUA_NATIVE_PIPE_DIRECTORY = \'\\\\.\\pipe\\codex-computer-use-11111111-1111-4111-8111-111111111111\'\nOTHER = "keep"\n';

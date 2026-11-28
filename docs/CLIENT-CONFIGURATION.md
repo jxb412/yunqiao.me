@@ -2,7 +2,7 @@
 
 本文说明当前源码的客户端配置流程。[下载客户端](https://github.com/jxb412/yunqiao.me/releases/latest) · [安装说明](../INSTALLATION.md) · [使用指南](../USER-GUIDE.md)
 
-ChatGPT 桌面入口通过 `config.toml` 配置客户端使用的接口地址、认证和模型。程序安装位置与配置目录分别识别；找不到 `.exe` 或 `.app` 不阻止配置预览和保存。
+ChatGPT 桌面入口通过 `config.toml` 配置支持 Codex 的桌面版本所用的编程模型、接口地址和认证。找不到 `.exe` 或 `.app` 时仍可预览和保存共享编程配置。
 
 | 用途 | Windows | macOS |
 | --- | --- | --- |
@@ -12,11 +12,28 @@ ChatGPT 桌面入口通过 `config.toml` 配置客户端使用的接口地址、
 | Claude Code 用户配置 | `%USERPROFILE%\.claude\settings.json`，遵循 `CLAUDE_CONFIG_DIR` | `~/.claude/settings.json`，遵循 `CLAUDE_CONFIG_DIR` |
 | Gemini CLI | `%USERPROFILE%\.gemini\settings.json` 与 `.env` | `~/.gemini/settings.json` 与 `.env` |
 
+设置了 `GEMINI_CLI_HOME` 时，Gemini CLI 会在该目录下的 `.gemini` 文件夹读取上述两个文件。首次在项目中运行时，请交互打开 `gemini`，核对目录并在信任提示中选择。Gemini CLI 0.71.1 会在已信任的工作区加载用户级 `.gemini/.env`，项目中优先匹配的环境文件和当前终端的同名变量也会影响结果。[官方配置参考](https://geminicli.com/docs/reference/configuration/) · [工作区信任说明](https://geminicli.com/docs/cli/trusted-folders/)
+
 向导显示本次实际使用的配置路径。Claude 桌面版另用系统对应的应用数据目录与 `Claude-3p/configLibrary`，不套用 Claude Code 路径；多目录有冲突时先确认位置。
 
 Claude 桌面版的模型菜单按供应商的实际目录生成。云桥会保留兼容的 Claude 型号和带有真实型号的供应商路由，去掉重复项，并把所选默认模型排在首位。向导会说明有多少项未识别为 Claude 型号。升级前已接入的用户，请在“客户端接入”打开 Claude 桌面版的“更换配置”，同步模型、选择默认项、保存并重启 Claude。旧会话中的 Sonnet、Opus 和 Haiku 网关别名仍按原连接转发。[Claude Desktop 官方模型配置](https://claude.com/docs/third-party/claude-desktop/models)
 
 ## 配置流程
+
+### 已核对的客户端参数
+
+| 客户端 | 云桥使用的配置和核验范围 |
+| --- | --- |
+| Codex CLI / 支持 Codex 的桌面版本 | 普通网关模式写入 Responses 供应商。共存模式使用根级 `openai_base_url` 和 `model_catalog_json`。Windows 上用原生 CLI 0.172.0 和 0.171.0-alpha.13.2 验证了实际请求。桌面应用登录和聊天界面另行验证。[原生测试记录](CODEX-NATIVE-VALIDATION.md) |
+| Claude Code / Claude Desktop | Claude Code 2.1.332 已通过回环流式对话核对认证。直连 Anthropic 使用 `ANTHROPIC_API_KEY`，云桥网关使用 `ANTHROPIC_AUTH_TOKEN`。Desktop 第三方配置按同一选择写入 `inferenceGatewayAuthScheme`，已覆盖文件读写和恢复。桌面模型菜单取决于客户端版本和供应商支持的 Claude 型号。[Claude Code 认证](https://code.claude.com/docs/en/authentication#authentication-precedence) · [Desktop 网关](https://claude.com/docs/third-party/claude-desktop/gateway) |
+| Gemini CLI | 设置 `security.auth.selectedType` 和 `model.name`，保留设置文件里的注释和无关字段。0.71.1 在受信任的临时工作区读取了自定义目录下的配置，使用指定模型和 API Key 完成回环对话。[官方设置读取代码](https://github.com/google-gemini/gemini-cli/blob/v0.71.1/packages/cli/src/config/settings.ts) |
+| OpenCode、Qwen Code、Kimi CLI、CodeBuddy CLI | 按向导给出的手动配置，Windows 上的 OpenCode 1.19.6、Qwen Code 0.28.7 / 0.29.0、Kimi CLI 1.52.0 和 CodeBuddy CLI 2.187.0 均向回环服务发送了预期的 Chat Completions 请求。OpenCode V2 的配置示例按开发版文档核对。[OpenCode V1](https://opencode.ai/v1/docs/providers/) · [OpenCode V2](https://github.com/anomalyco/opencode/blob/dev/services/site/src/docs/content/providers.mdx) · [Qwen](https://github.com/QwenLM/qwen-code/blob/v0.29.0/docs/users/configuration/auth.md) · [Kimi](https://moonshotai.github.io/kimi-cli/en/configuration/providers.html) · [CodeBuddy CLI](https://www.codebuddy.cn/docs/cli/models) |
+| WorkBuddy、CodeBuddy IDE、ZCode 桌面版 | 按已安装版本和官方页面核对手动填写的模型、地址和认证字段，实际在线对话需在对应应用登录。ZCode CLI 提供通用连接参数。[WorkBuddy](https://www.workbuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/Model) · [CodeBuddy IDE](https://www.codebuddy.cn/docs/ide/Features/models) · [ZCode](https://zcode.z.ai/cn/docs/configuration) |
+| DeepSeek / 兼容应用、Antigravity | DeepSeek 作为 API 服务提供连接参数，由支持自定义地址的客户端使用。Antigravity 官方文档中尚未查到第三方 API 地址配置入口，云桥展示其支持范围。[DeepSeek](https://api-docs.deepseek.com/) · [Antigravity](https://antigravity.google/docs/models/) |
+
+### 从选择供应商到保存
+
+使用免密的本机或局域网模型服务时，Gemini CLI 与 Claude Code 仍要求原生认证。向导会选用本地网关，客户端用云桥令牌连接网关，网关按供应商设置免密转发。Codex CLI 已实测支持免密直连。保存有效的网关配置时，桌面版会按当前监听地址和端口启动已停止的网关，开机启动偏好保持原值。
 
 1. 选择客户端、供应商和模型。运行时发现的本地 API 配置会导入供应商列表；官方 OAuth 登录记录单独识别。
 2. 在“共享编程配置”查看实际路径。已有文件会标为“已发现配置”，首次配置会标为“应用时创建”。

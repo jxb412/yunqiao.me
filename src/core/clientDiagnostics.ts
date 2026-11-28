@@ -4,7 +4,11 @@ import { parse as parseToml } from 'smol-toml';
 import type { ActionDeps } from './actions.js';
 import { getAdapter, type ConnectContext } from './agents/adapters.js';
 import { inspectAppliedPlan, jsonObject, readText } from './agents/configFiles.js';
+import { parseGeminiSettings } from './agents/geminiSettings.js';
+import { nativeDirectCredentialIssue } from './agents/directConnection.js';
+import { isGatewayCatalogPath, readManagedGatewayModelCatalog } from './agents/catalogStorage.js';
 import { readOfficialCodexIdentity, getCoexistCatalog } from './gateway/coexist.js';
+import { providerAllowsAnonymous } from './providerEndpoint.js';
 
 export interface ClientDiagnosticCheck {
   id: string;
@@ -23,7 +27,7 @@ const ENVIRONMENT: Record<string, string[]> = {
   'claude-code': ['CLAUDE_CONFIG_DIR', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL'],
   'codex-cli': ['CODEX_HOME', 'OPENAI_BASE_URL', 'OPENAI_API_KEY'],
   'chatgpt-desktop': ['CODEX_HOME', 'OPENAI_BASE_URL', 'OPENAI_API_KEY'],
-  'gemini-cli': ['GOOGLE_GEMINI_BASE_URL', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI'],
+  'gemini-cli': ['GEMINI_CLI_HOME', 'GOOGLE_GEMINI_BASE_URL', 'GOOGLE_GENAI_API_VERSION', 'GEMINI_API_KEY', 'GEMINI_MODEL', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI'],
 };
 
 /** Desktop IPC only. Strict payload; reads host-selected files, never renderer-supplied paths. */
@@ -55,14 +59,19 @@ function inspectClient(deps: ActionDeps, payload: unknown): ClientDiagnosticRepo
   } catch {
     add('location', 'error', '配置位置', '无法安全检测客户端或读取配置位置，请检查安装目录与文件权限后重试。');
   }
+  let codexCatalogPath: unknown;
   if (paths.length) {
     let present = 0, invalid = false;
     for (const file of paths) {
       try {
         if (!fs.existsSync(file)) continue;
         present++;
-        if (path.extname(file) === '.json') jsonObject(file);
-        else if (path.extname(file) === '.toml') parseToml(readText(file).replace(/^\uFEFF/, ''));
+        if (adapter.id === 'gemini-cli' && path.basename(file) === 'settings.json') parseGeminiSettings(readText(file));
+        else if (path.extname(file) === '.json') jsonObject(file);
+        else if (path.extname(file) === '.toml') {
+          const parsed = parseToml(readText(file).replace(/^\uFEFF/, ''));
+          if (shared) codexCatalogPath = parsed.model_catalog_json;
+        }
         else readText(file);
       } catch { invalid = true; }
     }
@@ -82,12 +91,25 @@ function inspectClient(deps: ActionDeps, payload: unknown): ClientDiagnosticRepo
       const modelsValid = selected.length > 0 && selected.every(id => provider!.models.some(model => model.id === id));
       add('models', modelsValid ? 'ok' : 'warning', '所选模型', modelsValid ? '默认模型与已设置的角色映射均在当前供应商模型列表中。' : '部分所选模型不在当前列表，请同步模型后重新配置；列表缺失不代表上游一定不可用。');
       let local = false;
-      try { local = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(provider.baseUrl).hostname); } catch { /* invalid handled by configuration check */ }
-      add('credential', official || local || provider.apiKeys.some(key => key.enabled && key.key) ? 'ok' : 'error', '凭据配置', official ? '当前选择使用本机官方登录，下方单独检查登录记录。' : local && !provider.apiKeys.some(key => key.enabled && key.key) ? '本地服务未设置 API Key，请确认服务允许匿名访问。' : provider.apiKeys.some(key => key.enabled && key.key) ? '至少存在一个已启用的 API Key；有效性与额度需在供应商页手动测试。' : '没有已启用且非空的 API Key，请在供应商页补全。');
+      try { local = providerAllowsAnonymous(new URL(provider.baseUrl).hostname, provider.apiKeys); } catch { /* invalid handled by configuration check */ }
+      const hasKey = provider.apiKeys.some(key => key.enabled && !!key.key.trim());
+      const nativeIssue = state.mode === 'direct' ? nativeDirectCredentialIssue(adapter.id, hasKey) : '';
+      const credentialMessage = official ? '当前选择使用本机官方登录，下方单独检查登录记录。' : nativeIssue
+        || (hasKey ? '至少存在一个已启用的 API Key，有效性与额度可在供应商页测试。'
+          : local ? '本地服务未设置 API Key，请确认服务允许匿名访问。' : '没有已启用且非空的 API Key，请在供应商页补全。');
+      add('credential', official || (!nativeIssue && (hasKey || local)) ? 'ok' : 'error', '凭据配置', credentialMessage);
       if (automatic && adapter.matchesConfiguration) {
         try {
           const context: ConnectContext = { provider, model: state.model || '', modelMap: state.modelMap, mode: state.mode || 'gateway', authMode: state.authMode || 'api', permissionMode: state.permissionMode || 'preserve', skipOnboarding: state.skipOnboarding, previousBackup: state.backupPath, gatewayUrl: deps.gatewayUrl(), token: deps.store.settings.read().gatewayToken, globalProxy: deps.store.settings.read().proxy, modelCatalogPath: path.join(deps.store.dir, 'codex-model-catalog.json') };
-          const matches = adapter.matchesConfiguration(context);
+          let catalogMatches = true;
+          if (shared && context.mode === 'gateway' && context.authMode === 'api' && isGatewayCatalogPath(codexCatalogPath, deps.store.dir)) {
+            const managed = readManagedGatewayModelCatalog(codexCatalogPath, deps.store.dir);
+            catalogMatches = managed?.catalog.yunqiao.providerId === provider.id
+              && managed.catalog.models.some(entry => entry?.slug === `${provider.id}/${context.model}`);
+            context.gatewayModelCatalog = true;
+            context.modelCatalogPath = codexCatalogPath;
+          }
+          const matches = catalogMatches && adapter.matchesConfiguration(context);
           add('parameters', matches ? 'ok' : 'warning', '连接参数一致性', matches ? '受管理配置与当前供应商、模型、地址及凭据选择一致。' : '本地配置与当前选择不同，可能已更改端口、令牌或供应商。请重新预览；有外部编辑时先处理冲突。');
         } catch { add('parameters', 'error', '连接参数一致性', '无法按当前选择生成有效配置，请检查供应商、模型与配置目录，再重新预览。'); }
       }
@@ -108,7 +130,7 @@ function inspectClient(deps: ActionDeps, payload: unknown): ClientDiagnosticRepo
     if (state.backupPath) {
       try {
         const restorePaths = adapter.restorePaths?.(state.backupPath) ?? paths;
-        const sameRoot = paths.length === restorePaths.length && paths.every((file, index) => path.resolve(file) === path.resolve(restorePaths[index]));
+        const sameRoot = restorePaths.length > 0 && restorePaths.every(file => paths.some(current => path.relative(current, file) === ''));
         add('backup-location', sameRoot ? 'ok' : 'warning', '备份所属位置', sameRoot ? '备份属于当前配置位置。' : '备份属于此前的配置位置，当前检测到的安装位置已变化；恢复只处理原位置，请核对后再接入新位置。');
         const inspected = inspectAppliedPlan(shared ? 'codex-cli' : adapter.id, state.backupPath, restorePaths);
         add('backup', inspected.backupReadable ? 'ok' : 'error', '原始备份', inspected.backupReadable ? '接入前备份可以读取。' : '接入前的部分备份缺失或不可读，请检查备份目录与权限。');
