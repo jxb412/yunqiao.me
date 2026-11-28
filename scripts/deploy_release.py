@@ -132,7 +132,10 @@ def upload_files(client, release_dir, records, destination, replace_existing=Fal
                     raise RuntimeError('Previous package backup verification failed: ' + name)
                 sftp.chmod(previous, 0o600)
             sftp.chmod(staged, 0o644)
-            sftp.posix_rename(staged, target)
+            if observed is None:
+                sftp.rename(staged, target)  # Standard SFTP rename rejects a concurrently created target.
+            else:
+                sftp.posix_rename(staged, target)
             print('Published verified file: ' + name, flush=True)
     return backup
 
